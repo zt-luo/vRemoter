@@ -710,7 +710,6 @@ final class VoiceSessionCoordinator {
         owner = .none
         openRequestedRemote = nil
         continuousRemoteSession = false
-        continuousStopInProgress = false
         continuousIdleWorkItem?.cancel()
         continuousIdleWorkItem = nil
         if sendTrigger {
