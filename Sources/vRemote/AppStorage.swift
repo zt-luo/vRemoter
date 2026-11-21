@@ -6,6 +6,8 @@ enum AppStorage {
     static let macInputEnabledKey = "macInputEnabled"
     static let remoteInputEnabledKey = "remoteInputEnabled"
     static let inputTriggerKeyKey = "inputTriggerKey"
+    static let voiceInputHostKey = "voiceInputHost"
+    static let secondInputDeviceUIDKey = "secondInputDeviceUID"
 
     static let logsDirectory: URL = {
         FileManager.default.homeDirectoryForCurrentUser
@@ -34,6 +36,8 @@ enum AppStorage {
             macInputEnabledKey: true,
             remoteInputEnabledKey: true,
             inputTriggerKeyKey: InputTriggerKey.option.rawValue,
+            voiceInputHostKey: VoiceInputHost.doubao.rawValue,
+            secondInputDeviceUIDKey: "",
         ])
         ensureDirectory(logsDirectory)
         ensureDirectory(applicationSupportDirectory)
@@ -70,6 +74,21 @@ enum AppStorage {
         set {
             UserDefaults.standard.set(newValue.rawValue, forKey: inputTriggerKeyKey)
         }
+    }
+
+    static var voiceInputHost: VoiceInputHost {
+        get {
+            let raw = UserDefaults.standard.string(forKey: voiceInputHostKey)
+            return VoiceInputHost(rawValue: raw ?? "") ?? .doubao
+        }
+        set {
+            UserDefaults.standard.set(newValue.rawValue, forKey: voiceInputHostKey)
+        }
+    }
+
+    static var secondInputDeviceUID: String {
+        get { UserDefaults.standard.string(forKey: secondInputDeviceUIDKey) ?? "" }
+        set { UserDefaults.standard.set(newValue, forKey: secondInputDeviceUIDKey) }
     }
 
     static func ensureDirectory(_ url: URL) {

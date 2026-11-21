@@ -31,8 +31,10 @@ final class DoubaoAudioStateMonitor {
         }
     }
 
-    private static let targetBundleID = "com.bytedance.inputmethod.doubaoime"
     private static let targetDeviceName = "vRemoteDr 2ch"
+
+    private(set) var host: VoiceInputHost
+    private var targetBundleID: String
 
     private var started = false
     private var processObjectID = AudioObjectID(kAudioObjectUnknown)
@@ -40,6 +42,23 @@ final class DoubaoAudioStateMonitor {
     private var lastSnapshot: Snapshot?
 
     var onSnapshotChanged: ((Snapshot) -> Void)?
+
+    init(host: VoiceInputHost = .doubao) {
+        self.host = host
+        self.targetBundleID = host.bundleID
+    }
+
+    /// Rebinds the monitor after the user changes the voice input tool.
+    func setHost(_ host: VoiceInputHost) {
+        guard host != self.host else { return }
+        self.host = host
+        targetBundleID = host.bundleID
+        unbindProcessObject()
+        lastSnapshot = nil
+        refreshBindingAndPublish(force: true)
+    }
+
+    private var logTag: String { "[\(host.logTag)]" }
 
     private lazy var processListListener: AudioObjectPropertyListenerBlock = {
         [weak self] _, _ in
@@ -67,7 +86,7 @@ final class DoubaoAudioStateMonitor {
             processListListener
         )
         if status != noErr {
-            print("[DOUBAO-STATE] 无法监听音频进程列表: \(Self.describe(status))")
+            print("\(logTag) 无法监听音频进程列表: \(Self.describe(status))")
         }
         refreshBindingAndPublish(force: true)
     }
@@ -102,7 +121,7 @@ final class DoubaoAudioStateMonitor {
 
     private func refreshBindingIfNeeded() {
         let app = NSRunningApplication.runningApplications(
-            withBundleIdentifier: Self.targetBundleID
+            withBundleIdentifier: targetBundleID
         ).first { !$0.isTerminated }
 
         guard let app else {
@@ -149,7 +168,7 @@ final class DoubaoAudioStateMonitor {
         )
 
         print(
-            "[DOUBAO-STATE] 已绑定 pid=\(pid) audioProcess=\(translated) " +
+            "\(logTag) 已绑定 pid=\(pid) audioProcess=\(translated) " +
             "listeners=\(Self.describe(runningStatus))/\(Self.describe(devicesStatus))"
         )
     }
@@ -180,7 +199,7 @@ final class DoubaoAudioStateMonitor {
         guard force || snapshot != lastSnapshot else { return }
         lastSnapshot = snapshot
         print(
-            "[DOUBAO-STATE] state=\(snapshot.state.rawValue) " +
+            "\(logTag) state=\(snapshot.state.rawValue) " +
             "pid=\(snapshot.pid.map(String.init) ?? "-") " +
             "devices=\(snapshot.deviceSummary)"
         )
@@ -188,7 +207,7 @@ final class DoubaoAudioStateMonitor {
            !snapshot.inputDeviceNames.contains(Self.targetDeviceName)
         {
             print(
-                "[DOUBAO-STATE] ⚠️ 豆包正在录音，但实际输入不是 " +
+                "\(logTag) ⚠️ \(host.shortTitle)正在录音，但实际输入不是 " +
                 Self.targetDeviceName
             )
         }

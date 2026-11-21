@@ -41,7 +41,10 @@ enum VoiceSessionSelfTest {
         let coordinator: X6SessionCoordinator
         var clock = Date(timeIntervalSince1970: 1_000)
         var triggerTapCount = 0
+        var triggerDownCount = 0
+        var triggerUpCount = 0
         var routeChanges = [Bool]()
+        var routeCaptureFlags = [Bool]()
         var openRequests = [(VoiceRemoteID, Bool)]()
         var closeRequestCount = 0
         var openResults = [RemoteMicrophoneOpenResult]()
@@ -49,20 +52,31 @@ enum VoiceSessionSelfTest {
 
         init(initialState: DoubaoAudioStateMonitor.State = .inactive) {
             doubao = FakeDoubaoState(state: initialState)
-            var routeSink: ((Bool) -> Void)?
+            var routeSink: ((Bool, Bool) -> Void)?
             var triggerSink: (() -> Void)?
+            var triggerDownSink: (() -> Void)?
+            var triggerUpSink: (() -> Void)?
             var nowSink: (() -> Date)?
             coordinator = X6SessionCoordinator(
                 doubaoState: doubao,
-                setRemoteRouteActive: { routeSink?($0) },
+                setRemoteRouteActive: { routeSink?($0, $1) },
                 triggerTap: { triggerSink?() },
+                triggerDown: { triggerDownSink?() },
+                triggerUp: { triggerUpSink?() },
                 now: { nowSink?() ?? Date(timeIntervalSince1970: 0) }
             )
-            routeSink = { [weak self] active in
+            routeSink = { [weak self] active, captureSecond in
                 self?.routeChanges.append(active)
+                self?.routeCaptureFlags.append(captureSecond)
             }
             triggerSink = { [weak self] in
                 self?.triggerTapCount += 1
+            }
+            triggerDownSink = { [weak self] in
+                self?.triggerDownCount += 1
+            }
+            triggerUpSink = { [weak self] in
+                self?.triggerUpCount += 1
             }
             nowSink = { [weak self] in
                 self?.clock ?? Date(timeIntervalSince1970: 0)
@@ -133,6 +147,14 @@ enum VoiceSessionSelfTest {
         testChromecastReasonZeroWhileClosedIsIgnored(checks)
         testIndependentRemoteStops(checks)
         testDebouncedRetry(checks)
+        testWeTypeHoldSurvivesStartVerification(checks)
+        testWeTypeKeyboardHoldCloses(checks)
+        testWeTypeAdoptsExternalRecording(checks)
+        testWeTypeShortTapDoesNotReopen(checks)
+        testRemoteSessionDoesNotCaptureSecondInput(checks)
+        testKeyboardSessionCapturesSecondInput(checks)
+        testForceCloseReleasesWeTypeTrigger(checks)
+        testTriggerDeviceFlags(checks)
         testRepeatableTargets(checks)
         emit("[SELF-TEST] completed failures=\(checks.failures)")
         return checks.failures == 0
@@ -281,6 +303,152 @@ enum VoiceSessionSelfTest {
         )
     }
 
+    private static func testWeTypeHoldSurvivesStartVerification(
+        _ c: CheckContext
+    ) {
+        let h = Harness()
+        h.coordinator.voiceHost = .weType
+        h.beginChromecastPress()
+        c.expect(h.triggerDownCount == 1, "weType press sends one keyDown")
+        c.expect(h.triggerTapCount == 0, "weType never sends a synthetic tap")
+        c.expect(
+            h.coordinator.debugSnapshot.phase == "open",
+            "weType opens without waiting for CoreAudio"
+        )
+        RunLoop.current.run(until: Date().addingTimeInterval(1.1))
+        c.expect(
+            h.coordinator.debugSnapshot.phase == "open",
+            "weType does not hit the one-second opening timeout"
+        )
+        c.expect(h.closeRequestCount == 0, "weType keeps the remote stream open")
+        h.endChromecastPress()
+        c.expect(h.triggerUpCount == 1, "weType release sends one keyUp")
+        c.expect(
+            h.coordinator.debugSnapshot.phase == "closed",
+            "weType release closes the session"
+        )
+        c.expect(
+            h.openRequests.isEmpty,
+            "weType push-to-talk never requests a persistent stream"
+        )
+    }
+
+    private static func testWeTypeKeyboardHoldCloses(_ c: CheckContext) {
+        let h = Harness()
+        h.coordinator.voiceHost = .weType
+        h.coordinator.triggerDownObserved(isSynthetic: false)
+        c.expect(h.triggerDownCount == 0, "keyboard PTT is not replayed")
+        c.expect(
+            h.openRequests.isEmpty,
+            "keyboard PTT does not open the remote mic for WeType"
+        )
+        c.expect(
+            h.coordinator.debugSnapshot.phase == "open",
+            "keyboard PTT opens the session immediately"
+        )
+        h.coordinator.triggerUpObserved(isSynthetic: false)
+        c.expect(
+            h.coordinator.debugSnapshot.phase == "closed",
+            "keyboard PTT release closes the session"
+        )
+        c.expect(h.triggerTapCount == 0, "keyboard PTT never synthesizes a trigger")
+    }
+
+    private static func testWeTypeAdoptsExternalRecording(
+        _ c: CheckContext
+    ) {
+        let h = Harness()
+        h.coordinator.voiceHost = .weType
+        h.doubao.emit(.active)
+        c.expect(
+            h.coordinator.debugSnapshot.phase == "open",
+            "weType adopts external recording"
+        )
+        c.expect(
+            h.routeChanges.last == true,
+            "weType adoption opens the mix"
+        )
+        c.expect(
+            h.routeCaptureFlags.last == true,
+            "weType external recording captures the computer mic"
+        )
+        h.doubao.emit(.inactive)
+        c.expect(
+            h.coordinator.debugSnapshot.phase == "closed",
+            "weType inactive closes the mix"
+        )
+        c.expect(
+            h.routeChanges.last == false,
+            "weType inactive closes the route"
+        )
+    }
+
+    private static func testRemoteSessionDoesNotCaptureSecondInput(
+        _ c: CheckContext
+    ) {
+        let h = Harness()
+        h.coordinator.voiceHost = .weType
+        h.beginChromecastPress()
+        c.expect(
+            h.routeCaptureFlags.last == false,
+            "weType remote session does not capture the computer mic"
+        )
+        h.endChromecastPress()
+    }
+
+    private static func testKeyboardSessionCapturesSecondInput(
+        _ c: CheckContext
+    ) {
+        let h = Harness()
+        h.coordinator.voiceHost = .weType
+        h.coordinator.triggerDownObserved(isSynthetic: false)
+        c.expect(
+            h.routeCaptureFlags.last == true,
+            "weType keyboard session captures the computer mic"
+        )
+        h.coordinator.triggerUpObserved(isSynthetic: false)
+        c.expect(
+            h.routeCaptureFlags.last == false,
+            "closing the keyboard session releases the computer mic"
+        )
+    }
+
+    private static func testWeTypeShortTapDoesNotReopen(_ c: CheckContext) {
+        let h = Harness()
+        h.coordinator.voiceHost = .weType
+        h.beginChromecastPress()
+        h.advance(0.12)
+        h.endChromecastPress()
+        c.expect(h.triggerDownCount == 1, "short PTT press sends keyDown")
+        c.expect(h.triggerUpCount == 1, "short PTT release sends keyUp")
+        c.expect(
+            h.openRequests.isEmpty,
+            "short PTT press never opens a persistent stream"
+        )
+        c.expect(
+            h.coordinator.debugSnapshot.phase == "closed",
+            "short PTT press closes on release"
+        )
+    }
+
+    private static func testForceCloseReleasesWeTypeTrigger(
+        _ c: CheckContext
+    ) {
+        let h = Harness()
+        h.coordinator.voiceHost = .weType
+        h.beginChromecastPress()
+        h.coordinator.voiceHost = .doubao
+        h.coordinator.forceClose()
+        c.expect(
+            h.triggerUpCount == 1,
+            "forceClose releases a held push-to-talk trigger"
+        )
+        c.expect(
+            h.coordinator.debugSnapshot.phase == "closed",
+            "forceClose leaves the session closed"
+        )
+    }
+
     private static func testRepeatableTargets(_ c: CheckContext) {
         for target in [
             RemoteMappingTarget.deleteBackward,
@@ -303,6 +471,63 @@ enum VoiceSessionSelfTest {
         ] {
             c.expect(!target.isRepeatable, "\(target.rawValue) is one-shot")
         }
+    }
+
+    private static func testTriggerDeviceFlags(_ c: CheckContext) {
+        c.expect(
+            InputTriggerKey.option.primaryKeyCode == 0x3A,
+            "left option posts keyCode 0x3A"
+        )
+        c.expect(
+            InputTriggerKey.option.deviceFlag.rawValue == 0x20,
+            "left option carries the NX left-option device bit"
+        )
+        c.expect(
+            InputTriggerKey.optionRight.primaryKeyCode == 0x3D,
+            "right option posts keyCode 0x3D"
+        )
+        c.expect(
+            InputTriggerKey.optionRight.deviceFlag.rawValue == 0x40,
+            "right option carries the NX right-option device bit"
+        )
+        c.expect(
+            InputTriggerKey.option.keyCodes == [0x3A, 0x3D],
+            "option observes both physical sides"
+        )
+        c.expect(
+            InputTriggerKey.optionRight.keyCodes == [0x3A, 0x3D],
+            "right option also observes both physical sides"
+        )
+        c.expect(
+            InputTriggerKey.command.primaryKeyCode == 0x37
+                && InputTriggerKey.command.deviceFlag.rawValue == 0x08,
+            "left command maps to keyCode 0x37 and device bit 0x08"
+        )
+        c.expect(
+            InputTriggerKey.commandRight.primaryKeyCode == 0x36
+                && InputTriggerKey.commandRight.deviceFlag.rawValue == 0x10,
+            "right command maps to keyCode 0x36 and device bit 0x10"
+        )
+        c.expect(
+            InputTriggerKey.control.primaryKeyCode == 0x3B
+                && InputTriggerKey.control.deviceFlag.rawValue == 0x01,
+            "left control maps to keyCode 0x3B and device bit 0x01"
+        )
+        c.expect(
+            InputTriggerKey.controlRight.primaryKeyCode == 0x3E
+                && InputTriggerKey.controlRight.deviceFlag.rawValue == 0x2000,
+            "right control maps to keyCode 0x3E and device bit 0x2000"
+        )
+        c.expect(
+            InputTriggerKey.shift.primaryKeyCode == 0x38
+                && InputTriggerKey.shift.deviceFlag.rawValue == 0x02,
+            "left shift maps to keyCode 0x38 and device bit 0x02"
+        )
+        c.expect(
+            InputTriggerKey.shiftRight.primaryKeyCode == 0x3C
+                && InputTriggerKey.shiftRight.deviceFlag.rawValue == 0x04,
+            "right shift maps to keyCode 0x3C and device bit 0x04"
+        )
     }
 }
 #endif

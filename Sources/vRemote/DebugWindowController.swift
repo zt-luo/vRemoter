@@ -244,8 +244,14 @@ private final class ConsoleViewModel: ObservableObject {
     @Published var remoteStreaming = false
     @Published var macInputEnabled = true
     @Published var remoteInputEnabled = true
-    @Published var doubaoIsRecording = false
-    @Published var doubaoInput = "--"
+    @Published var secondInputDevices: [AudioInputDevice] = []
+    @Published var secondInputDeviceUID = ""
+    @Published var secondInputDeviceName = ""
+    @Published var secondInputCapturing = false
+    @Published var voiceHost = AppStorage.voiceInputHost
+    @Published var voiceIsRecording = false
+    @Published var voiceInput = "--"
+    @Published var voiceInputWarning: String?
     @Published var driverAvailable = false
     @Published var macLevelDB = -120.0
     @Published var remoteLevelDB = -120.0
@@ -265,10 +271,22 @@ private final class ConsoleViewModel: ObservableObject {
     var onRestartApp: (() -> Void)?
     var onMacInputEnabledChanged: ((Bool) -> Void)?
     var onRemoteInputEnabledChanged: ((Bool) -> Void)?
+    var onSecondInputDeviceChanged: ((String) -> Void)?
     var onInputTriggerChanged: (() -> Void)?
+    var onVoiceInputHostChanged: ((VoiceInputHost) -> Void)?
     var onRemoteMappingEnabledChanged: ((SupportedRemoteID, Bool) -> Void)?
 
-    var doubaoUsesVRemote: Bool { doubaoInput.contains("vRemoteDr 2ch") }
+    var voiceUsesVRemote: Bool { voiceInput.contains("vRemoteDr 2ch") }
+
+    func setVoiceInputHost(_ host: VoiceInputHost) {
+        guard voiceHost != host else { return }
+        voiceHost = host
+        AppStorage.voiceInputHost = host
+        if inputTriggerKey != host.defaultTrigger {
+            setInputTrigger(host.defaultTrigger)
+        }
+        onVoiceInputHostChanged?(host)
+    }
 
     func setInputTrigger(_ trigger: InputTriggerKey) {
         guard inputTriggerKey != trigger else { return }
@@ -290,6 +308,12 @@ private final class ConsoleViewModel: ObservableObject {
     func setRemoteInputEnabled(_ enabled: Bool) {
         remoteInputEnabled = enabled
         onRemoteInputEnabledChanged?(enabled)
+    }
+
+    func setSecondInputDevice(_ uid: String) {
+        guard secondInputDeviceUID != uid else { return }
+        secondInputDeviceUID = uid
+        onSecondInputDeviceChanged?(uid)
     }
 
     func refreshPermissions() {
@@ -370,7 +394,9 @@ final class DebugWindowController: NSWindowController, NSWindowDelegate {
     var onRestartApp: (() -> Void)?
     var onMacInputEnabledChanged: ((Bool) -> Void)?
     var onRemoteInputEnabledChanged: ((Bool) -> Void)?
+    var onSecondInputDeviceChanged: ((String) -> Void)?
     var onInputTriggerChanged: (() -> Void)?
+    var onVoiceInputHostChanged: ((VoiceInputHost) -> Void)?
     var onRemoteMappingEnabledChanged: ((SupportedRemoteID, Bool) -> Void)?
 
     private let model = ConsoleViewModel()
@@ -410,8 +436,14 @@ final class DebugWindowController: NSWindowController, NSWindowDelegate {
         model.onRemoteInputEnabledChanged = { [weak self] enabled in
             self?.onRemoteInputEnabledChanged?(enabled)
         }
+        model.onSecondInputDeviceChanged = { [weak self] uid in
+            self?.onSecondInputDeviceChanged?(uid)
+        }
         model.onInputTriggerChanged = { [weak self] in
             self?.onInputTriggerChanged?()
+        }
+        model.onVoiceInputHostChanged = { [weak self] host in
+            self?.onVoiceInputHostChanged?(host)
         }
         model.onRemoteMappingEnabledChanged = { [weak self] remote, enabled in
             self?.onRemoteMappingEnabledChanged?(remote, enabled)
@@ -445,8 +477,14 @@ final class DebugWindowController: NSWindowController, NSWindowDelegate {
         remoteStreaming: Bool,
         macInputEnabled: Bool,
         remoteInputEnabled: Bool,
-        doubaoIsRecording: Bool,
-        doubaoInput: String,
+        secondInputDevices: [AudioInputDevice],
+        secondInputDeviceUID: String,
+        secondInputDeviceName: String,
+        secondInputCapturing: Bool,
+        voiceHost: VoiceInputHost,
+        voiceIsRecording: Bool,
+        voiceInput: String,
+        voiceInputWarning: String?,
         driverAvailable: Bool,
         x6Connected: Bool,
         chromecastConnected: Bool,
@@ -461,8 +499,14 @@ final class DebugWindowController: NSWindowController, NSWindowDelegate {
             self.model.remoteStreaming = remoteStreaming
             self.model.macInputEnabled = macInputEnabled
             self.model.remoteInputEnabled = remoteInputEnabled
-            self.model.doubaoIsRecording = doubaoIsRecording
-            self.model.doubaoInput = doubaoInput
+            self.model.secondInputDevices = secondInputDevices
+            self.model.secondInputDeviceUID = secondInputDeviceUID
+            self.model.secondInputDeviceName = secondInputDeviceName
+            self.model.secondInputCapturing = secondInputCapturing
+            self.model.voiceHost = voiceHost
+            self.model.voiceIsRecording = voiceIsRecording
+            self.model.voiceInput = voiceInput
+            self.model.voiceInputWarning = voiceInputWarning
             self.model.driverAvailable = driverAvailable
             self.model.x6Connected = x6Connected
             self.model.chromecastConnected = chromecastConnected
@@ -617,10 +661,20 @@ private struct StudioMixerView: View {
     private var mixer: some View {
         HStack(spacing: 0) {
             InputChannelView(
-                title: L10n.text("MacBook 麦克风", "MacBook Mic"),
-                subtitle: L10n.text("电脑内置", "Built in"),
+                title: L10n.text("电脑麦克风", "Computer Mic"),
+                subtitle: model.secondInputDeviceName,
                 db: model.macLevelDB,
                 enabled: model.macInputEnabled,
+                capturing: model.secondInputCapturing,
+                participationNote: model.voiceHost == .weType
+                    ? L10n.text(
+                        "键盘触发时参与混合",
+                        "In mix on keyboard trigger"
+                    )
+                    : nil,
+                devices: model.secondInputDevices,
+                selectedDeviceUID: model.secondInputDeviceUID,
+                onSelectDevice: model.setSecondInputDevice,
                 onToggle: model.setMacInputEnabled
             )
             .frame(width: 225)
@@ -647,16 +701,10 @@ private struct StudioMixerView: View {
     private var statusPanel: some View {
         VStack(spacing: 0) {
             StatusRow(
-                title: L10n.text("豆包输入设备", "Doubao input"),
-                value: model.doubaoIsRecording
-                    ? (model.doubaoUsesVRemote
-                        ? L10n.text("vRemoteDr 2ch · 录音中", "vRemoteDr 2ch · Recording")
-                        : model.doubaoInput)
-                    : L10n.text("当前未录音", "Not recording"),
-                tone: model.doubaoIsRecording && !model.doubaoUsesVRemote ? .error : .good,
-                action: model.doubaoIsRecording && !model.doubaoUsesVRemote
-                    ? L10n.text("设置方法", "Fix settings")
-                    : nil,
+                title: model.voiceHost.title,
+                value: voiceStatusValue,
+                tone: voiceStatusTone,
+                action: voiceStatusAction,
                 onAction: { model.activeModal = .permission(.doubaoInput) }
             )
             StatusRow(
@@ -720,6 +768,52 @@ private struct StudioMixerView: View {
         }
         return L10n.text("HID 与 BLE 未连接", "HID and BLE disconnected")
     }
+
+    private var voiceStatusValue: String {
+        if let warning = model.voiceInputWarning {
+            return warning
+        }
+        if model.voiceHost.canObserveRecording {
+            if model.voiceIsRecording {
+                return model.voiceUsesVRemote
+                    ? L10n.text(
+                        "vRemoteDr 2ch · 录音中",
+                        "vRemoteDr 2ch · Recording"
+                    )
+                    : model.voiceInput
+            }
+            return L10n.text("当前未录音", "Not recording")
+        }
+        if model.voiceIsRecording {
+            return model.voiceUsesVRemote
+                ? L10n.text(
+                    "麦克风 · vRemoteDr 2ch",
+                    "Microphone · vRemoteDr 2ch"
+                )
+                : L10n.text(
+                    "麦克风 · \(model.voiceInput)",
+                    "Microphone · \(model.voiceInput)"
+                )
+        }
+        return L10n.text("已就绪", "Ready")
+    }
+
+    private var voiceStatusTone: StatusTone {
+        if model.voiceInputWarning != nil { return .warning }
+        if model.voiceHost.canObserveRecording,
+           model.voiceIsRecording,
+           !model.voiceUsesVRemote {
+            return .error
+        }
+        return .good
+    }
+
+    private var voiceStatusAction: String? {
+        guard model.voiceHost == .doubao,
+              model.voiceIsRecording,
+              !model.voiceUsesVRemote else { return nil }
+        return L10n.text("设置方法", "Fix settings")
+    }
 }
 
 private struct ConsolePageSelector: View {
@@ -767,7 +861,7 @@ private struct KeyMappingView: View {
     var body: some View {
         VStack(spacing: 14) {
             triggerPanel
-                .frame(height: 116)
+                .frame(height: 138)
             HStack(spacing: 14) {
                 devicePanel
                     .frame(width: 238)
@@ -782,17 +876,39 @@ private struct KeyMappingView: View {
                 HStack(spacing: 7) {
                     Image(systemName: "waveform.badge.mic")
                         .foregroundStyle(ConsoleTheme.green)
-                    Text(L10n.text("豆包语音触发键", "Doubao voice trigger"))
+                    Text(L10n.text("语音输入与触发键", "Voice input & trigger"))
                         .font(.system(size: 17, weight: .semibold))
                         .foregroundStyle(ConsoleTheme.text)
                 }
-                Text(L10n.text(
-                    "遥控器语音键与电脑键盘都使用这个按键控制豆包。这里必须与豆包输入法中的语音快捷键保持一致。",
-                    "The remote voice key and Mac keyboard both use this trigger. It must match Doubao Input Method's voice shortcut."
-                ))
-                    .font(.system(size: 12.5))
+                HStack(spacing: 8) {
+                    Text(L10n.text("语音输入工具", "Voice input"))
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundStyle(ConsoleTheme.secondary)
+                    Picker(
+                        L10n.text("语音输入工具", "Voice input"),
+                        selection: Binding(
+                            get: { model.voiceHost },
+                            set: model.setVoiceInputHost
+                        )
+                    ) {
+                        ForEach(VoiceInputHost.allCases) { host in
+                            Text(host.title).tag(host)
+                        }
+                    }
+                    .labelsHidden()
+                    .frame(width: 132)
+                    .disabled(model.remoteStreaming)
+                }
+                Text(voiceTriggerDescription)
+                    .font(.system(size: 12))
                     .foregroundStyle(ConsoleTheme.secondary)
                     .fixedSize(horizontal: false, vertical: true)
+                if model.voiceHost == .weType,
+                   let warning = model.voiceInputWarning {
+                    Label(warning, systemImage: "exclamationmark.triangle.fill")
+                        .font(.system(size: 10.5, weight: .medium))
+                        .foregroundStyle(ConsoleTheme.amber)
+                }
             }
             Spacer(minLength: 10)
             VStack(alignment: .trailing, spacing: 7) {
@@ -808,7 +924,7 @@ private struct KeyMappingView: View {
                     }
                 }
                 .labelsHidden()
-                .frame(width: 158)
+                .frame(width: 180)
                 .disabled(model.remoteStreaming)
                 if model.inputTriggerKey == .function {
                     Label(
@@ -826,6 +942,21 @@ private struct KeyMappingView: View {
         }
         .padding(.horizontal, 19)
         .background(panelBackground(ConsoleTheme.surface, radius: 17))
+    }
+
+    private var voiceTriggerDescription: String {
+        switch model.voiceHost {
+        case .doubao:
+            L10n.text(
+                "遥控器语音键与电脑键盘都使用这个按键控制豆包。必须与豆包输入法中的语音快捷键一致。键盘触发左右都识别，遥控器按所选侧合成。",
+                "The remote voice key and Mac keyboard both use this trigger. It must match Doubao Input Method's voice shortcut. The keyboard accepts either side; the remote synthesizes the selected side."
+            )
+        case .weType:
+            L10n.text(
+                "遥控器按住说话、松手结束。微信输入法「按住说话」默认是右 Option，请与这里保持一致；麦克风请在微信输入法 → 语音输入 → 麦克风里选择 vRemoteDr 2ch。键盘触发左右都识别，遥控器按所选侧合成。",
+                "Hold the remote to talk and release to stop. WeType uses right Option for push-to-talk by default; keep this trigger in sync. Choose vRemoteDr 2ch in WeType → Voice Input → Microphone. The keyboard accepts either side; the remote synthesizes the selected side."
+            )
+        }
     }
 
     private var devicePanel: some View {
@@ -1013,7 +1144,7 @@ private struct MappingRow: View {
                     .font(.system(size: 11))
                     .foregroundStyle(ConsoleTheme.tertiary)
             } else if button.voiceControlled {
-                Text(RemoteMappingTarget.doubaoVoice.title)
+                Text(AppStorage.voiceInputHost.voiceActionTitle)
                     .font(.system(size: 11))
                     .foregroundStyle(ConsoleTheme.green)
             } else {
@@ -1264,9 +1395,14 @@ private struct InputChannelView: View {
     let subtitle: String
     let db: Double
     let enabled: Bool
+    var capturing: Bool?
+    var participationNote: String?
     var purchaseLink = false
     var showTestHint = false
     var onPurchase: (() -> Void)?
+    var devices: [AudioInputDevice] = []
+    var selectedDeviceUID = ""
+    var onSelectDevice: ((String) -> Void)?
     let onToggle: (Bool) -> Void
 
     var body: some View {
@@ -1275,17 +1411,41 @@ private struct InputChannelView: View {
                 .font(.system(size: 19, weight: .semibold))
                 .foregroundStyle(enabled ? ConsoleTheme.text : ConsoleTheme.tertiary)
                 .lineLimit(1)
-            Text(subtitle)
-                .font(.system(size: 13))
-                .foregroundStyle(enabled ? ConsoleTheme.secondary : ConsoleTheme.tertiary)
-                .padding(.top, 4)
+            if let onSelectDevice {
+                if devices.isEmpty {
+                    Text(L10n.text("未找到输入设备", "No input device"))
+                        .font(.system(size: 13))
+                        .foregroundStyle(ConsoleTheme.tertiary)
+                        .padding(.top, 4)
+                } else {
+                    Picker(
+                        L10n.text("输入设备", "Input device"),
+                        selection: Binding(
+                            get: { selectedDeviceUID },
+                            set: { onSelectDevice($0) }
+                        )
+                    ) {
+                        ForEach(devices) { device in
+                            Text(device.name).tag(device.uid)
+                        }
+                    }
+                    .labelsHidden()
+                    .pickerStyle(.menu)
+                    .controlSize(.small)
+                    .frame(maxWidth: 172, alignment: .leading)
+                    .padding(.top, 2)
+                }
+            } else {
+                Text(subtitle)
+                    .font(.system(size: 13))
+                    .foregroundStyle(enabled ? ConsoleTheme.secondary : ConsoleTheme.tertiary)
+                    .padding(.top, 4)
+            }
             HStack(spacing: 6) {
                 Circle()
                     .fill(enabled ? ConsoleTheme.green : ConsoleTheme.tertiary)
                     .frame(width: 10, height: 10)
-                Text(enabled
-                    ? L10n.text("有声音", "Active")
-                    : L10n.text("不参与混合", "Muted"))
+                Text(activityText)
                     .font(.system(size: 11, weight: .semibold))
                     .foregroundStyle(enabled ? ConsoleTheme.secondary : ConsoleTheme.tertiary)
                 Spacer()
@@ -1346,7 +1506,7 @@ private struct InputChannelView: View {
             .padding(.top, 31)
             HStack(spacing: 4) {
                 Text(enabled
-                    ? L10n.text("参与混合", "In mix")
+                    ? (participationNote ?? L10n.text("参与混合", "In mix"))
                     : L10n.text("不参与混合", "Not in mix"))
                 Spacer()
                 if purchaseLink {
@@ -1365,6 +1525,14 @@ private struct InputChannelView: View {
         .padding(.top, 23)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .opacity(enabled ? 1 : 0.58)
+    }
+
+    private var activityText: String {
+        guard enabled else { return L10n.text("不参与混合", "Muted") }
+        if let capturing, !capturing {
+            return L10n.text("就绪", "Ready")
+        }
+        return L10n.text("有声音", "Active")
     }
 
     private var dbText: String {
@@ -1454,7 +1622,10 @@ private struct OutputChannelView: View {
     }
 
     private var outputError: Bool {
-        !model.driverAvailable || (model.doubaoIsRecording && !model.doubaoUsesVRemote)
+        !model.driverAvailable
+            || (model.voiceHost.canObserveRecording
+                && model.voiceIsRecording
+                && !model.voiceUsesVRemote)
     }
 }
 

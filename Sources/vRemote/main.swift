@@ -45,9 +45,9 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private let x6 = X6HIDBridge()
     private let chromecastHID = ChromecastRemoteHIDBridge()
     private let x6SearchSuppressor = X6SearchSuppressor()
-    private let doubaoAudioState = DoubaoAudioStateMonitor()
+    private let voiceInputState = DoubaoAudioStateMonitor()
     private lazy var x6Session = X6SessionCoordinator(
-        doubaoState: doubaoAudioState
+        doubaoState: voiceInputState
     )
     private let debugWindow = DebugWindowController()
     private let updateWindow = UpdateWindowController()
@@ -67,8 +67,10 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
     )
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        NSApp.setActivationPolicy(.accessory)
         AppStorage.prepare()
+        NSApp.setActivationPolicy(.accessory)
+        voiceInputState.setHost(AppStorage.voiceInputHost)
+        x6Session.voiceHost = AppStorage.voiceInputHost
         AppAnalytics.configure()
         // Keep one continuous diagnostic history while X6 is being tuned.
         // Log.swift rotates at 5 MB; only the explicit menu action clears it.
@@ -275,6 +277,9 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
             self?.headerLabel.title = "状态 · \(status)"
             self?.updateStatus()
         }
+        x6Session.onSnapshotObserved = { [weak self] _ in
+            self?.updateStatus()
+        }
         x6Session.start()
         x6SearchSuppressor.start()
         x6.start()
@@ -289,6 +294,9 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
             self?.debugWindow.updateMacLevel(db)
         }
         AudioPipe.shared.onRouteChanged = { [weak self] _ in
+            self?.updateStatus()
+        }
+        AudioPipe.shared.onSecondInputCaptureChanged = { [weak self] _ in
             self?.updateStatus()
         }
 
@@ -474,11 +482,17 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private func updateStatus() {
         let anyHID = x6HIDConnected || chromecastHIDConnected
         let anyBLE = x6BLEConnected || chromecastBLEConnected
-        let doubaoSnapshot = doubaoAudioState.snapshotNow()
-        let doubaoUsesVRemote = doubaoSnapshot.inputDeviceNames.contains("vRemoteDr 2ch")
+        let host = AppStorage.voiceInputHost
+        let voiceSnapshot = voiceInputState.snapshotNow()
+        let voiceUsesVRemote = voiceSnapshot.inputDeviceNames.contains("vRemoteDr 2ch")
         let statusText: String
-        if doubaoSnapshot.isRecording && !doubaoUsesVRemote {
-            statusText = L10n.text("豆包输入设备错误", "Incorrect Doubao input")
+        if host.canObserveRecording,
+           voiceSnapshot.isRecording,
+           !voiceUsesVRemote {
+            statusText = L10n.text(
+                "\(host.shortTitle)输入设备错误",
+                "Incorrect \(host.shortTitle) input"
+            )
         } else if remoteStreaming {
             statusText = L10n.text("遥控器录音中", "Remote recording")
         } else if anyHID && anyBLE {
@@ -497,13 +511,44 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
             remoteStreaming: remoteStreaming,
             macInputEnabled: AudioPipe.shared.isMacInputEnabled,
             remoteInputEnabled: AudioPipe.shared.isRemoteInputEnabled,
-            doubaoIsRecording: doubaoSnapshot.isRecording,
-            doubaoInput: doubaoSnapshot.deviceSummary,
+            secondInputDevices: AudioPipe.availableSecondInputDevices(),
+            secondInputDeviceUID: AudioPipe.shared.secondInputDeviceUID,
+            secondInputDeviceName: AudioPipe.shared.secondInputDeviceName,
+            secondInputCapturing: AudioPipe.shared.isSecondInputCapturing,
+            voiceHost: host,
+            voiceIsRecording: voiceSnapshot.isRecording,
+            voiceInput: voiceSnapshot.deviceSummary,
+            voiceInputWarning: voiceInputWarning(
+                host: host,
+                snapshot: voiceSnapshot
+            ),
             driverAvailable: AudioPipe.shared.isOutputDeviceAvailable,
             x6Connected: x6HIDConnected || x6BLEConnected,
             chromecastConnected: chromecastHIDConnected || chromecastBLEConnected,
             macLevelDB: nil,
             remoteLevelDB: nil
+        )
+    }
+
+    private func voiceInputWarning(
+        host: VoiceInputHost,
+        snapshot: DoubaoAudioStateMonitor.Snapshot
+    ) -> String? {
+        guard host == .weType else { return nil }
+        if snapshot.state == .unavailable {
+            return L10n.text("微信输入法未运行", "WeType is not running")
+        }
+        // WeType only exposes its input device while its voice engine is
+        // actually recording. Idle snapshots have no device list, which is not
+        // a misconfiguration.
+        guard snapshot.state == .active,
+              !snapshot.inputDeviceIDs.isEmpty,
+              !snapshot.inputDeviceNames.contains("vRemoteDr 2ch") else {
+            return nil
+        }
+        return L10n.text(
+            "麦克风不是 vRemoteDr 2ch",
+            "Microphone is not vRemoteDr 2ch"
         )
     }
 
@@ -522,6 +567,10 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
             )
             self?.updateStatus()
         }
+        debugWindow.onSecondInputDeviceChanged = { [weak self] uid in
+            AudioPipe.shared.setSecondInputDevice(uid: uid)
+            self?.updateStatus()
+        }
         debugWindow.onRemoteInputEnabledChanged = { [weak self] enabled in
             let audio = AudioPipe.shared
             audio.setInputEnabled(
@@ -532,13 +581,22 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 self?.x6BLE.closeMicrophone(force: true)
                 self?.chromecastBLE.closeMicrophone(force: true)
                 self?.debugWindow.updateRemoteLevel(-120)
-            } else if self?.doubaoAudioState.snapshotNow().isRecording == true {
+            } else if AppStorage.voiceInputHost.canObserveRecording,
+                      self?.voiceInputState.snapshotNow().isRecording == true {
                 self?.openPreferredRemoteMicrophone()
             }
             self?.updateStatus()
         }
         debugWindow.onInputTriggerChanged = { [weak self] in
             self?.x6SearchSuppressor.triggerConfigurationDidChange()
+        }
+        debugWindow.onVoiceInputHostChanged = { [weak self] host in
+            guard let self else { return }
+            print("[APP] 语音输入工具 → \(host.title)")
+            self.x6Session.forceClose()
+            self.x6Session.voiceHost = host
+            self.voiceInputState.setHost(host)
+            self.updateStatus()
         }
         debugWindow.onRemoteMappingEnabledChanged = { [weak self] remote, enabled in
             switch remote {

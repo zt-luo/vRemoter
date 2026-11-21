@@ -14,6 +14,13 @@ import CoreAudio
 import CoreMedia
 import Foundation
 
+struct AudioInputDevice: Identifiable, Hashable {
+    let uid: String
+    let name: String
+
+    var id: String { uid }
+}
+
 final class AudioPipe: NSObject, AVCaptureAudioDataOutputSampleBufferDelegate {
     static let shared = AudioPipe()
 
@@ -50,9 +57,18 @@ final class AudioPipe: NSObject, AVCaptureAudioDataOutputSampleBufferDelegate {
     private var mixActive = false
     private var macInputEnabled = AppStorage.macInputEnabled
     private var remoteInputEnabled = AppStorage.remoteInputEnabled
+    /// Set by the session owner: keyboard-triggered sessions capture the
+    /// computer microphone; remote-triggered sessions use only the remote.
+    private var captureSecondInputRequested = false
     private var availableOutputDeviceID: AudioDeviceID?
     private var outputDeviceID: AudioDeviceID?
     private var outputIOProcID: AudioDeviceIOProcID?
+
+    /// The optional second microphone mixed with the remote. It is selectable
+    /// per machine and defaults to the built-in mic, then the system default.
+    private(set) var secondInputDeviceUID = AppStorage.secondInputDeviceUID
+    private(set) var secondInputDeviceName = ""
+    private var currentCaptureDeviceUID: String?
 
     private var pendingMac: [Float] = []
     private var pendingMacIndex = 0
@@ -70,6 +86,7 @@ final class AudioPipe: NSObject, AVCaptureAudioDataOutputSampleBufferDelegate {
 
     var onMacLevel: ((Double) -> Void)?
     var onRouteChanged: ((Bool) -> Void)?
+    var onSecondInputCaptureChanged: ((Bool) -> Void)?
     private var macLevelAt = Date.distantPast
     private var captureConfigured = false
 
@@ -89,11 +106,110 @@ final class AudioPipe: NSObject, AVCaptureAudioDataOutputSampleBufferDelegate {
         if ProcessInfo.processInfo.environment["MIA_DIAGNOSTICS"] == "1" {
             startDiagnosticsTimer()
         }
+        prepareSecondInputSelection()
         if macInputEnabled {
-            requestBuiltInMicAccess()
+            // Ask for permission up front, but do not open the microphone
+            // until a keyboard-triggered session needs it.
+            requestSecondInputPermission()
         } else {
-            print("[AUDIO] MacBook 麦克风未勾选，不启动采集")
+            print("[AUDIO] 电脑麦克风未勾选，键盘触发时不采集")
         }
+    }
+
+    private func prepareSecondInputSelection() {
+        guard let device = Self.resolveSecondInputDevice(
+            preferredUID: secondInputDeviceUID
+        ) else {
+            secondInputDeviceName = ""
+            return
+        }
+        secondInputDeviceUID = device.uniqueID
+        secondInputDeviceName = device.localizedName
+        AppStorage.secondInputDeviceUID = device.uniqueID
+        print("[AUDIO] 电脑麦克风选择 · \(device.localizedName)")
+    }
+
+    // MARK: - Second input selection
+
+    static func availableSecondInputDevices() -> [AudioInputDevice] {
+        availableCaptureDevices()
+            .map { AudioInputDevice(uid: $0.uniqueID, name: $0.localizedName) }
+    }
+
+    func setSecondInputDevice(uid: String) {
+        secondInputDeviceUID = uid
+        AppStorage.secondInputDeviceUID = uid
+        if let device = Self.resolveSecondInputDevice(preferredUID: uid) {
+            secondInputDeviceUID = device.uniqueID
+            secondInputDeviceName = device.localizedName
+            AppStorage.secondInputDeviceUID = device.uniqueID
+        }
+        guard shouldCaptureSecondInput else {
+            print(
+                "[AUDIO] 已选择电脑麦克风 uid=\(uid)，" +
+                "下次键盘触发时启用"
+            )
+            return
+        }
+        restartSecondInputCapture()
+    }
+
+    private static func availableCaptureDevices() -> [AVCaptureDevice] {
+        var deviceTypes: [AVCaptureDevice.DeviceType] = [
+            .builtInMicrophone,
+            .externalUnknown,
+        ]
+        if #available(macOS 14.0, *) {
+            deviceTypes = [.microphone]
+        }
+        let discovery = AVCaptureDevice.DiscoverySession(
+            deviceTypes: deviceTypes,
+            mediaType: .audio,
+            position: .unspecified
+        )
+        return discovery.devices
+            .filter { device in
+                !device.localizedName.localizedCaseInsensitiveContains(
+                    targetDeviceName
+                ) && !device.uniqueID.localizedCaseInsensitiveContains(
+                    "vRemoteDr"
+                )
+            }
+            .sorted { lhs, rhs in
+                let lhsBuiltIn = isBuiltInMicrophone(lhs)
+                let rhsBuiltIn = isBuiltInMicrophone(rhs)
+                if lhsBuiltIn != rhsBuiltIn { return lhsBuiltIn }
+                return lhs.localizedName.localizedStandardCompare(
+                    rhs.localizedName
+                ) == .orderedAscending
+            }
+    }
+
+    private static func isBuiltInMicrophone(_ device: AVCaptureDevice) -> Bool {
+        let markers = ["BuiltInMicrophoneDevice", "MacBook", "Built-in", "Built-In"]
+        return markers.contains { marker in
+            device.uniqueID.localizedCaseInsensitiveContains(marker)
+                || device.localizedName.localizedCaseInsensitiveContains(marker)
+        }
+    }
+
+    private static func resolveSecondInputDevice(
+        preferredUID: String
+    ) -> AVCaptureDevice? {
+        let devices = availableCaptureDevices()
+        if let preferred = devices.first(where: { $0.uniqueID == preferredUID }) {
+            return preferred
+        }
+        if let builtIn = devices.first(where: { isBuiltInMicrophone($0) }) {
+            return builtIn
+        }
+        if let systemDefault = AVCaptureDevice.default(for: .audio),
+           let match = devices.first(where: {
+               $0.uniqueID == systemDefault.uniqueID
+           }) {
+            return match
+        }
+        return devices.first
     }
 
     // MARK: - Public input API
@@ -113,14 +229,21 @@ final class AudioPipe: NSObject, AVCaptureAudioDataOutputSampleBufferDelegate {
         )
     }
 
-    /// Kept under the V1 method name so the proven X6 session state machine
-    /// remains unchanged. In vRemote, `active` means that the dual-input mix
-    /// is open; it no longer selects one microphone over another.
-    func setRemoteActive(_ active: Bool) {
+    /// Opens or closes the session mix. `captureSecondInput` is true only for
+    /// keyboard-triggered sessions; remote-triggered sessions never open the
+    /// computer microphone, so macOS does not show its microphone indicator.
+    func setRemoteActive(
+        _ active: Bool,
+        captureSecondInput: Bool = false
+    ) {
         stateLock.lock()
         let changed = mixActive != active
+            || captureSecondInputRequested != captureSecondInput
         mixActive = active
-        clearPendingBuffersLocked()
+        captureSecondInputRequested = captureSecondInput
+        if changed {
+            clearPendingBuffersLocked()
+        }
         if active, changed {
             remoteSessionScheduledBuffers = 0
             remoteSessionRenderedFrames = 0
@@ -133,11 +256,17 @@ final class AudioPipe: NSObject, AVCaptureAudioDataOutputSampleBufferDelegate {
         } else {
             stopOutputDevice()
         }
+        updateSecondInputCapture()
         guard changed else { return }
+        let secondName = secondInputDeviceName.isEmpty
+            ? "电脑麦克风"
+            : secondInputDeviceName
         print(
             active
-                ? "[AUDIO] 双麦克风混音开启 · X6 + MacBook · Mac 对齐延迟 120ms"
-                : "[AUDIO] 双麦克风混音关闭"
+                ? (captureSecondInput
+                    ? "[AUDIO] 混音开启 · 电脑麦克风已加入 · \(secondName) · Mac 对齐延迟 120ms"
+                    : "[AUDIO] 混音开启 · 仅遥控器")
+                : "[AUDIO] 混音关闭"
         )
         onRouteChanged?(active)
     }
@@ -162,13 +291,18 @@ final class AudioPipe: NSObject, AVCaptureAudioDataOutputSampleBufferDelegate {
         AppStorage.remoteInputEnabled = remote
 
         if macChanged {
-            setMacCaptureEnabled(mac)
-            if !mac { onMacLevel?(-120) }
+            if mac {
+                requestSecondInputPermission()
+                updateSecondInputCapture()
+            } else {
+                stopSecondInputCapture()
+                onMacLevel?(-120)
+            }
         }
         if macChanged || remoteChanged {
             print(
-                "[AUDIO] 输入选择更新 · MacBook=\(mac ? "ON" : "OFF") " +
-                "X6=\(remote ? "ON" : "OFF")"
+                "[AUDIO] 输入选择更新 · 电脑麦克风=\(mac ? "ON" : "OFF") " +
+                "遥控器=\(remote ? "ON" : "OFF")"
             )
             onRouteChanged?(mixActive)
         }
@@ -176,6 +310,7 @@ final class AudioPipe: NSObject, AVCaptureAudioDataOutputSampleBufferDelegate {
 
     var isMacInputEnabled: Bool { inputState.macEnabled }
     var isRemoteInputEnabled: Bool { inputState.remoteEnabled }
+    var isSecondInputCapturing: Bool { captureSession.isRunning }
     var isOutputDeviceAvailable: Bool { availableOutputDeviceID != nil }
 
     func stop() {
@@ -188,87 +323,131 @@ final class AudioPipe: NSObject, AVCaptureAudioDataOutputSampleBufferDelegate {
         stopOutputDevice()
     }
 
-    // MARK: - Built-in microphone capture
+    // MARK: - Second microphone capture
 
-    private func requestBuiltInMicAccess() {
+    private func requestSecondInputPermission() {
         switch AVCaptureDevice.authorizationStatus(for: .audio) {
         case .authorized:
-            startBuiltInMicCapture()
+            break
         case .notDetermined:
-            print("[AUDIO] 请求 MacBook 麦克风权限…")
+            print("[AUDIO] 请求电脑麦克风权限…")
             AVCaptureDevice.requestAccess(for: .audio) { [weak self] granted in
                 DispatchQueue.main.async {
+                    guard let self else { return }
                     if granted {
-                        self?.startBuiltInMicCapture()
+                        self.updateSecondInputCapture()
                     } else {
-                        print("[AUDIO] ⚠️ MacBook 麦克风权限被拒绝")
+                        print("[AUDIO] ⚠️ 电脑麦克风权限被拒绝")
                     }
                 }
             }
         default:
-            print("[AUDIO] ⚠️ 没有 MacBook 麦克风权限；当前只能收到 X6 音频")
+            print("[AUDIO] ⚠️ 没有电脑麦克风权限；当前只能收到遥控器音频")
         }
     }
 
-    private func startBuiltInMicCapture() {
-        if captureConfigured {
-            captureQueue.async { [weak self] in
-                guard let self, !self.captureSession.isRunning else { return }
-                self.captureSession.startRunning()
-                print("[AUDIO] MacBook 麦克风采集已恢复")
-            }
+    private func startSecondInputCapture() {
+        guard shouldCaptureSecondInput else { return }
+        guard let device = Self.resolveSecondInputDevice(
+            preferredUID: secondInputDeviceUID
+        ) else {
+            secondInputDeviceName = ""
+            print("[AUDIO] ⚠️ 找不到可用的电脑麦克风")
             return
         }
-        let discovery = AVCaptureDevice.DiscoverySession(
-            deviceTypes: [.builtInMicrophone],
-            mediaType: .audio,
-            position: .unspecified
-        )
-        let device = discovery.devices.first {
-            $0.uniqueID == "BuiltInMicrophoneDevice"
-        } ?? discovery.devices.first {
-            $0.localizedName.localizedCaseInsensitiveContains("MacBook")
-        }
-        guard let device else {
-            print("[AUDIO] ⚠️ 找不到 MacBook 内置麦克风")
-            return
-        }
+        secondInputDeviceUID = device.uniqueID
+        secondInputDeviceName = device.localizedName
+        AppStorage.secondInputDeviceUID = device.uniqueID
 
-        do {
-            let input = try AVCaptureDeviceInput(device: device)
-            let output = AVCaptureAudioDataOutput()
-            output.audioSettings = [
-                AVFormatIDKey: kAudioFormatLinearPCM,
-                AVLinearPCMBitDepthKey: 32,
-                AVLinearPCMIsFloatKey: true,
-                AVLinearPCMIsNonInterleaved: false,
-                AVNumberOfChannelsKey: 1,
-            ]
-            output.setSampleBufferDelegate(self, queue: captureQueue)
-
-            captureSession.beginConfiguration()
-            guard captureSession.canAddInput(input),
-                  captureSession.canAddOutput(output)
-            else {
-                captureSession.commitConfiguration()
-                print("[AUDIO] ⚠️ 无法建立 MacBook 麦克风采集会话")
-                return
-            }
-            captureSession.addInput(input)
-            captureSession.addOutput(output)
-            captureSession.commitConfiguration()
-            captureConfigured = true
-
+        if captureConfigured, currentCaptureDeviceUID == device.uniqueID {
             captureQueue.async { [weak self] in
-                guard let self else { return }
+                guard let self,
+                      self.shouldCaptureSecondInput,
+                      !self.captureSession.isRunning else { return }
                 self.captureSession.startRunning()
+                DispatchQueue.main.async { [weak self] in
+                    self?.onSecondInputCaptureChanged?(true)
+                }
                 print(
-                    "[AUDIO] MacBook 麦克风采集已启动: " +
-                    "\(device.localizedName), running=\(self.captureSession.isRunning)"
+                    "[AUDIO] 电脑麦克风采集已恢复: \(device.localizedName)"
                 )
             }
-        } catch {
-            print("[AUDIO] ⚠️ MacBook 麦克风采集失败: \(error.localizedDescription)")
+            return
+        }
+        configureSecondInputCapture(device)
+    }
+
+    private func restartSecondInputCapture() {
+        captureQueue.async { [weak self] in
+            guard let self else { return }
+            if self.captureSession.isRunning {
+                self.captureSession.stopRunning()
+            }
+            self.captureConfigured = false
+            self.currentCaptureDeviceUID = nil
+            DispatchQueue.main.async {
+                self.startSecondInputCapture()
+            }
+        }
+    }
+
+    private func configureSecondInputCapture(_ device: AVCaptureDevice) {
+        captureQueue.async { [weak self] in
+            guard let self else { return }
+            if self.captureSession.isRunning {
+                self.captureSession.stopRunning()
+            }
+            self.captureSession.beginConfiguration()
+            for input in self.captureSession.inputs {
+                self.captureSession.removeInput(input)
+            }
+            for output in self.captureSession.outputs {
+                self.captureSession.removeOutput(output)
+            }
+            do {
+                let input = try AVCaptureDeviceInput(device: device)
+                let output = AVCaptureAudioDataOutput()
+                output.audioSettings = [
+                    AVFormatIDKey: kAudioFormatLinearPCM,
+                    AVLinearPCMBitDepthKey: 32,
+                    AVLinearPCMIsFloatKey: true,
+                    AVLinearPCMIsNonInterleaved: false,
+                    AVNumberOfChannelsKey: 1,
+                ]
+                output.setSampleBufferDelegate(self, queue: self.captureQueue)
+
+                guard self.captureSession.canAddInput(input),
+                      self.captureSession.canAddOutput(output)
+                else {
+                    self.captureSession.commitConfiguration()
+                    print("[AUDIO] ⚠️ 无法建立电脑麦克风采集会话")
+                    return
+                }
+                self.captureSession.addInput(input)
+                self.captureSession.addOutput(output)
+                self.captureSession.commitConfiguration()
+                self.captureConfigured = true
+                self.currentCaptureDeviceUID = device.uniqueID
+
+                guard self.shouldCaptureSecondInput else {
+                    return
+                }
+                self.captureSession.startRunning()
+                DispatchQueue.main.async { [weak self] in
+                    self?.onSecondInputCaptureChanged?(true)
+                }
+                print(
+                    "[AUDIO] 电脑麦克风采集已启动: " +
+                    "\(device.localizedName), running=" +
+                    "\(self.captureSession.isRunning)"
+                )
+            } catch {
+                self.captureSession.commitConfiguration()
+                print(
+                    "[AUDIO] ⚠️ 电脑麦克风采集失败: " +
+                    "\(error.localizedDescription)"
+                )
+            }
         }
     }
 
@@ -341,22 +520,54 @@ final class AudioPipe: NSObject, AVCaptureAudioDataOutputSampleBufferDelegate {
         return mixActive
     }
 
-    private var inputState: (mixActive: Bool, macEnabled: Bool, remoteEnabled: Bool) {
+    private var inputState: (
+        mixActive: Bool,
+        macEnabled: Bool,
+        remoteEnabled: Bool,
+        captureSecondInput: Bool
+    ) {
         stateLock.lock()
         defer { stateLock.unlock() }
-        return (mixActive, macInputEnabled, remoteInputEnabled)
+        return (
+            mixActive,
+            macInputEnabled,
+            remoteInputEnabled,
+            captureSecondInputRequested
+        )
     }
 
-    private func setMacCaptureEnabled(_ enabled: Bool) {
-        if enabled {
-            requestBuiltInMicAccess()
+    private var shouldCaptureSecondInput: Bool {
+        let state = inputState
+        return state.mixActive && state.captureSecondInput && state.macEnabled
+    }
+
+    private func updateSecondInputCapture() {
+        guard shouldCaptureSecondInput else {
+            stopSecondInputCapture()
             return
         }
+        switch AVCaptureDevice.authorizationStatus(for: .audio) {
+        case .authorized:
+            startSecondInputCapture()
+        case .notDetermined:
+            requestSecondInputPermission()
+        default:
+            print(
+                "[AUDIO] ⚠️ 没有电脑麦克风权限；本轮只用遥控器音频"
+            )
+        }
+    }
+
+    private func stopSecondInputCapture() {
         captureQueue.async { [weak self] in
             guard let self, self.captureSession.isRunning else { return }
             self.captureSession.stopRunning()
-            print("[AUDIO] MacBook 麦克风采集已暂停")
+            DispatchQueue.main.async { [weak self] in
+                self?.onSecondInputCaptureChanged?(false)
+            }
+            print("[AUDIO] 电脑麦克风采集已停止")
         }
+        onMacLevel?(-120)
     }
 
     private func schedule(
