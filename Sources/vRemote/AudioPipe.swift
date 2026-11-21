@@ -50,6 +50,7 @@ final class AudioPipe: NSObject, AVCaptureAudioDataOutputSampleBufferDelegate {
     private var mixActive = false
     private var macInputEnabled = AppStorage.macInputEnabled
     private var remoteInputEnabled = AppStorage.remoteInputEnabled
+    private var availableOutputDeviceID: AudioDeviceID?
     private var outputDeviceID: AudioDeviceID?
     private var outputIOProcID: AudioDeviceIOProcID?
 
@@ -75,9 +76,10 @@ final class AudioPipe: NSObject, AVCaptureAudioDataOutputSampleBufferDelegate {
     private override init() {
         super.init()
 
-        if let deviceID = Self.findOutputDevice(named: Self.targetDeviceName) {
-            startOutputDevice(deviceID)
-        } else {
+        availableOutputDeviceID = Self.findOutputDevice(
+            named: Self.targetDeviceName
+        )
+        if availableOutputDeviceID == nil {
             print(
                 "[AUDIO] ⚠️ 找不到 \(Self.targetDeviceName)，" +
                 "请确认 vRemoteDriver.driver 已安装"
@@ -126,6 +128,11 @@ final class AudioPipe: NSObject, AVCaptureAudioDataOutputSampleBufferDelegate {
         }
         stateLock.unlock()
 
+        if active {
+            ensureOutputDeviceStarted()
+        } else {
+            stopOutputDevice()
+        }
         guard changed else { return }
         print(
             active
@@ -169,7 +176,7 @@ final class AudioPipe: NSObject, AVCaptureAudioDataOutputSampleBufferDelegate {
 
     var isMacInputEnabled: Bool { inputState.macEnabled }
     var isRemoteInputEnabled: Bool { inputState.remoteEnabled }
-    var isOutputDeviceAvailable: Bool { outputDeviceID != nil }
+    var isOutputDeviceAvailable: Bool { availableOutputDeviceID != nil }
 
     func stop() {
         diagnosticsTimer?.invalidate()
@@ -178,17 +185,7 @@ final class AudioPipe: NSObject, AVCaptureAudioDataOutputSampleBufferDelegate {
         if captureSession.isRunning {
             captureSession.stopRunning()
         }
-
-        if let deviceID = outputDeviceID, let ioProcID = outputIOProcID {
-            let stopStatus = AudioDeviceStop(deviceID, ioProcID)
-            let destroyStatus = AudioDeviceDestroyIOProcID(deviceID, ioProcID)
-            print(
-                "[AUDIO] vRemote IOProc 已释放: " +
-                "stop=\(stopStatus), destroy=\(destroyStatus)"
-            )
-        }
-        outputIOProcID = nil
-        outputDeviceID = nil
+        stopOutputDevice()
     }
 
     // MARK: - Built-in microphone capture
@@ -436,6 +433,26 @@ final class AudioPipe: NSObject, AVCaptureAudioDataOutputSampleBufferDelegate {
     }
 
     // MARK: - CoreAudio direct output
+
+    private func ensureOutputDeviceStarted() {
+        guard outputIOProcID == nil else { return }
+        guard let deviceID = availableOutputDeviceID else { return }
+        startOutputDevice(deviceID)
+    }
+
+    private func stopOutputDevice() {
+        guard let deviceID = outputDeviceID, let ioProcID = outputIOProcID else {
+            return
+        }
+        let stopStatus = AudioDeviceStop(deviceID, ioProcID)
+        let destroyStatus = AudioDeviceDestroyIOProcID(deviceID, ioProcID)
+        outputIOProcID = nil
+        outputDeviceID = nil
+        print(
+            "[AUDIO] vRemote IOProc 已释放: " +
+            "stop=\(stopStatus), destroy=\(destroyStatus)"
+        )
+    }
 
     private func startOutputDevice(_ deviceID: AudioDeviceID) {
         var ioProcID: AudioDeviceIOProcID?
