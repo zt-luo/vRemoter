@@ -4,23 +4,10 @@ import Foundation
 
 enum SupportedRemoteID: String, CaseIterable, Identifiable, Codable {
     case chromecast
-    case x6
 
     var id: String { rawValue }
-
-    var title: String {
-        switch self {
-        case .chromecast: "Chromecast Voice Remote"
-        case .x6: "X6 Remote"
-        }
-    }
-
-    var signature: String {
-        switch self {
-        case .chromecast: "18D1 · 9450"
-        case .x6: "1D5A · C081"
-        }
-    }
+    var title: String { "Chromecast Voice Remote" }
+    var signature: String { "18D1 · 9450" }
 }
 
 struct RemoteButtonDefinition: Identifiable, Hashable {
@@ -68,31 +55,9 @@ enum RemoteProfiles {
     ]
 
     static func buttons(for remote: SupportedRemoteID) -> [RemoteButtonDefinition] {
-        switch remote {
-        case .chromecast: chromecastButtons
-        case .x6: x6Buttons
-        }
+        chromecastButtons
     }
 
-    static let x6Buttons: [RemoteButtonDefinition] = [
-        .init(id: "mouseMode", title: L10n.text("鼠标模式", "Mouse Mode"), symbol: "cursorarrow.motionlines", defaultTarget: .disabled, remappable: false),
-        .init(id: "k2A", title: "Delete", symbol: "delete.left", defaultTarget: .deleteBackward),
-        .init(id: "cE2", title: L10n.text("静音", "Mute"), symbol: "speaker.slash", defaultTarget: .mute),
-        .init(id: "c224", title: L10n.text("返回", "Back"), symbol: "chevron.backward", defaultTarget: .escape),
-        .init(id: "k65", title: L10n.text("菜单", "Menu"), symbol: "line.3.horizontal", defaultTarget: .disabled),
-        .init(id: "c196", title: L10n.text("浏览器/搜索", "Browser / Search"), symbol: "magnifyingglass", defaultTarget: .spotlight),
-        .init(id: "k52", title: L10n.text("方向上", "Up"), symbol: "arrow.up", defaultTarget: .arrowUp),
-        .init(id: "k51", title: L10n.text("方向下", "Down"), symbol: "arrow.down", defaultTarget: .arrowDown),
-        .init(id: "k50", title: L10n.text("方向左", "Left"), symbol: "arrow.left", defaultTarget: .arrowLeft),
-        .init(id: "k4F", title: L10n.text("方向右", "Right"), symbol: "arrow.right", defaultTarget: .arrowRight),
-        .init(id: "k28", title: "OK", symbol: "circle.inset.filled", defaultTarget: .returnKey),
-        .init(id: "k4B", title: "PG+", symbol: "arrow.up.to.line", defaultTarget: .pageUp),
-        .init(id: "k4E", title: "PG−", symbol: "arrow.down.to.line", defaultTarget: .pageDown),
-        .init(id: "voice", title: L10n.text("语音", "Voice"), symbol: "mic", defaultTarget: .weTypeVoice, voiceControlled: true),
-        .init(id: "cE9", title: L10n.text("音量＋", "Volume Up"), symbol: "speaker.plus", defaultTarget: .volumeUp),
-        .init(id: "cEA", title: L10n.text("音量－", "Volume Down"), symbol: "speaker.minus", defaultTarget: .volumeDown),
-        .init(id: "s01", title: L10n.text("电源", "Power"), symbol: "power", defaultTarget: .disabled),
-    ]
 }
 
 enum RemoteMappingTarget: String, CaseIterable, Identifiable, Codable, Hashable {
@@ -293,7 +258,7 @@ struct RemoteCustomShortcut: Codable, Hashable {
 }
 
 /// 切换应用会话：⌘ 虚拟按住 + Tab 发射 + 1s 倒计时自动收尾。
-/// 不依赖长按松手边沿，X6 / Chromecast 共用同一交互。
+/// 不依赖长按松手边沿，遥控器共用同一交互。
 ///
 /// ⚠️ 收尾定时用 GCD 主队列（DispatchWorkItem），不用 Timer.scheduledTimer——
 /// HID 回调在后台线程，后台 RunLoop 不跑 timer mode，定时器会永远不触发。

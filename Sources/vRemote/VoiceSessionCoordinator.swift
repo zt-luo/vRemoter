@@ -1,7 +1,6 @@
 import Foundation
 
 enum VoiceRemoteID: String, CaseIterable {
-    case x6
     case chromecast
 }
 
@@ -31,7 +30,7 @@ extension VoiceInputStateMonitor: VoiceInputStateProviding {}
 /// A transport START/STOP is never itself a keyboard toggle. A physical
 /// keyboard trigger already reaches WeType. A remote gesture synthesizes
 /// exactly one trigger only when it changes the intended recognition state.
-final class X6SessionCoordinator {
+final class VoiceSessionCoordinator {
     private enum Phase: String {
         case closed
         case opening
@@ -210,12 +209,9 @@ final class X6SessionCoordinator {
             publish(recordingStatus("遥控器已接入", "remote connected"))
 
         case .closed:
-            // Chromecast reserves reason 0x03 for a physical voice press, so
-            // a reason-0 stream while closed can only be a stale response to
-            // an earlier host request. X6 is different: its verified physical
-            // first press itself arrives as reason 0x00 and must remain a
-            // valid open gesture.
-            guard remote != .chromecast || reason != 0x00 else {
+            // A reason-0 stream while closed can only be a stale response to
+            // an earlier host request; the physical gesture uses reason 0x03.
+            guard reason != 0x00 else {
                 print(
                     "[VOICE-SESSION] stale host AUDIO_START ignored " +
                     "remote=\(remote.rawValue)"
@@ -324,9 +320,8 @@ final class X6SessionCoordinator {
             " phase=\(phase.rawValue)"
         )
 
-        // Do not automatically reopen a generic transport STOP. X6 may emit
-        // it immediately before its HID toggle-off edge. Only the proven
-        // Chromecast physical-tap path above performs an immediate recovery.
+        // Do not automatically reopen a generic transport STOP. Only the
+        // proven physical-tap path above performs an immediate recovery.
         if phase == .open || phase == .opening {
             publish(L10n.text(
                 "\(voiceHost.shortTitle)仍开启 · 遥控器音频已停止",
@@ -387,16 +382,6 @@ final class X6SessionCoordinator {
             String(format: "code=0x%04x", code)
         )
         scheduleOpenRetry(remote: remote, after: 0.20, attempt: 2)
-    }
-
-    // MARK: - X6 HID completion
-
-    func remoteHIDShortPress() {
-        closeRecognitionFromRemote(reason: "HID SHORT")
-    }
-
-    func remoteHIDLongPressEnded() {
-        closeRecognitionFromRemote(reason: "HID LONG release")
     }
 
     // MARK: - Physical keyboard trigger

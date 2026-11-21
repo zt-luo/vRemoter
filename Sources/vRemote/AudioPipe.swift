@@ -2,7 +2,7 @@
 //
 // MacBook microphone -> AVCaptureSession ----┐
 //                                             ├-> aligned equal mix -> vRemoteDr 2ch
-// X6 ATVV ADPCM -> decoded Int16 PCM --------┘
+// Remote ATVV ADPCM -> decoded Int16 PCM --------┘
 //
 // Both microphones are peers. Neither source permanently wins or ducks the
 // other. The Mac path is delayed slightly to compensate for BLE transport
@@ -33,7 +33,7 @@ final class AudioPipe: NSObject, AVCaptureAudioDataOutputSampleBufferDelegate {
     private static let outputSampleRate: Double = 48_000
     private static let outputChannels: AVAudioChannelCount = 2
 
-    // X6's decoded ATVV samples are much quieter than CoreAudio microphone
+    // Remote ATVV samples are much quieter than CoreAudio microphone
     // samples. This +20 dB calibration is inherited from the proven V1 path;
     // it is input calibration, not source priority.
     private static let remoteGain: Float = 10.0
@@ -605,7 +605,7 @@ final class AudioPipe: NSObject, AVCaptureAudioDataOutputSampleBufferDelegate {
             if remoteSessionScheduledBuffers == 1 {
                 let peak = resampled.reduce(0) { max($0, abs($1)) }
                 firstRemoteBufferDescription = String(
-                    format: "[AUDIO] X6 首缓冲 frames=%d peak=%.4f",
+                    format: "[AUDIO] 遥控器首缓冲 frames=%d peak=%.4f",
                     resampled.count,
                     peak
                 )
@@ -724,7 +724,7 @@ final class AudioPipe: NSObject, AVCaptureAudioDataOutputSampleBufferDelegate {
                     loggedFirstRemoteRender = true
                     let peak = remote.reduce(0) { max($0, abs($1)) }
                     firstRemoteRenderDescription = String(
-                        format: "[AUDIO] X6 首次输出 frames=%d peak=%.4f",
+                        format: "[AUDIO] 遥控器首次输出 frames=%d peak=%.4f",
                         remoteTaken,
                         peak
                     )

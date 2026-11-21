@@ -18,7 +18,7 @@ final class BLEBridge: NSObject {
     static let audioUUID    = CBUUID(string: "AB5E0003-5A21-4F05-BC7D-AF01F617B664")  // remote sends voice data to host (notify)
     static let controlUUID  = CBUUID(string: "AB5E0004-5A21-4F05-BC7D-AF01F617B664")  // control events from remote
 
-    // This V2 bridge owns one X6 ATVV connection.
+    // This V2 bridge owns one ATVV voice connection.
     private let nameHint: String?
     private let savedUUIDPath: String
     private let recordingPrefix: String
@@ -34,7 +34,7 @@ final class BLEBridge: NSObject {
     /// Called whenever the bridge produces or stops producing audio (true = streaming).
     var onStreamingChanged: ((Bool, Int /* sampleRate */) -> Void)?
     /// Raw ATVV session edges. Unlike `onStreamingChanged`, these preserve
-    /// the protocol reason so X6 can distinguish a native hold-to-talk stream
+    /// the protocol reason so callers can distinguish a native hold-to-talk stream
     /// from a host-requested persistent stream.
     var onAudioStarted: ((UInt8 /* reason */, Int /* sampleRate */) -> Void)?
     var onAudioStopped: ((UInt8 /* reason */) -> Void)?
@@ -184,7 +184,7 @@ final class BLEBridge: NSObject {
             onLevel?(-120, 0)
         }
         // Stop extending the session as soon as the user finishes a gesture.
-        // X6 does not reliably stop ATVV by itself; leaving keep-alive active
+        // Some remotes do not reliably stop ATVV by themselves; leaving keep-alive active
         // saturates its BLE link and delays/drops ordinary HID keyboard data.
         stopKeepAliveTimer()
         do {
@@ -222,7 +222,7 @@ final class BLEBridge: NSObject {
     private func tryDirectConnect() {
         // Prefer the currently connected physical device over a persisted
         // UUID. This makes same-model replacement remotes work without
-        // manually deleting x6-uuid.txt from the previous unit.
+        // manually deleting the saved UUID file from the previous unit.
         let connected = central.retrieveConnectedPeripherals(
             withServices: [Self.serviceUUID]
         )
@@ -563,7 +563,7 @@ extension BLEBridge: CBPeripheralDelegate {
         case Self.controlUUID:
             handleControl(data)
         case Self.commandUUID:
-            // Some ATVV remotes, including X6, return capabilities on the
+            // Some ATVV remotes return capabilities on the
             // bidirectional command characteristic rather than control.
             handleControl(data)
         case Self.audioUUID:

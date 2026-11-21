@@ -312,7 +312,7 @@ private final class UpdateWindowModel: ObservableObject {
           "id": 999999,
           "tag_name": "v1.1.1",
           "name": "vRemoter 1.1.1",
-          "body": "- 修复 Chromecast 短按偶尔未持续开启遥控器麦克风的问题\\n- 修复电脑 Option 关闭后旧状态可能重新开启遥控器音频的问题\\n- 改进双遥控器会话隔离与开麦确认\\n- 修复 X6 第一次短按可能被误判的问题",
+          "body": "- 修复 Chromecast 短按偶尔未持续开启遥控器麦克风的问题\\n- 修复电脑 Option 关闭后旧状态可能重新开启遥控器音频的问题\\n- 改进开麦确认与重试",
           "html_url": "https://github.com/zt-luo/vRemoter/releases",
           "draft": false,
           "prerelease": false,

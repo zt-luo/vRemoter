@@ -5,7 +5,6 @@ vRemoter 是一个 macOS 蓝牙语音遥控器工具：把遥控器语音键映�
 已接入的遥控器：
 
 - Google Chromecast Remote（VID `0x18D1` / PID `0x9450`）
-- X6-Remote（VID `0x1D5A` / PID `0xC081`）
 
 当前版本：`1.2.3`
 
@@ -46,4 +45,3 @@ APP 从本仓库的 GitHub Releases 读取版本清单：
 - [CHANGELOG.md](CHANGELOG.md)
 - [第三方许可说明](THIRD_PARTY_NOTICES.md)
 - [音频驱动说明](Driver/README.md)
-- [冻结 UI 说明](Design/vRemoter-UI-v1-Frozen/UI-FREEZE.md)

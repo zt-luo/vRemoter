@@ -149,9 +149,7 @@ private enum GuideAsset {
 
 private enum RemoteImageAsset {
     static func image(for remote: SupportedRemoteID) -> NSImage? {
-        let name = remote == .chromecast
-            ? "chromecast-voice-remote"
-            : "x6-remote"
+        let name = "chromecast-voice-remote"
         let candidates: [URL?] = [
             Bundle.main.resourceURL?
                 .appendingPathComponent("RemoteImages", isDirectory: true)
@@ -223,14 +221,9 @@ private final class ConsoleViewModel: ObservableObject {
     @Published var accessibilityGranted = false
     @Published var inputMonitoringGranted = false
     @Published var bluetoothGranted = false
-    @Published var x6Connected = false
     @Published var chromecastConnected = false
     @Published var inputTriggerKey = AppStorage.inputTriggerKey
     @Published var activeModal: ConsoleModal?
-    @Published var showX6MicHint = !UserDefaults.standard.bool(
-        forKey: "vRemoter.hasCompletedX6MicTest"
-    )
-
     var onStopMicrophone: (() -> Void)?
     var onRestartApp: (() -> Void)?
     var onMacInputEnabledChanged: ((Bool) -> Void)?
@@ -307,9 +300,6 @@ private final class ConsoleViewModel: ObservableObject {
 
     func observeRemoteLevel(_ db: Double) {
         remoteLevelDB = db
-        guard showX6MicHint, db > -100 else { return }
-        UserDefaults.standard.set(true, forKey: "vRemoter.hasCompletedX6MicTest")
-        showX6MicHint = false
     }
 
 }
@@ -409,7 +399,6 @@ final class DebugWindowController: NSWindowController, NSWindowDelegate {
         voiceInput: String,
         voiceInputWarning: String?,
         driverAvailable: Bool,
-        x6Connected: Bool,
         chromecastConnected: Bool,
         macLevelDB: Double? = nil,
         remoteLevelDB: Double? = nil
@@ -431,7 +420,6 @@ final class DebugWindowController: NSWindowController, NSWindowDelegate {
             self.model.voiceInput = voiceInput
             self.model.voiceInputWarning = voiceInputWarning
             self.model.driverAvailable = driverAvailable
-            self.model.x6Connected = x6Connected
             self.model.chromecastConnected = chromecastConnected
             if let macLevelDB { self.model.macLevelDB = macLevelDB }
             if let remoteLevelDB { self.model.remoteLevelDB = remoteLevelDB }
@@ -596,7 +584,6 @@ private struct StudioMixerView: View {
                 subtitle: L10n.text("蓝牙语音遥控器", "Bluetooth Voice Remote"),
                 db: model.remoteLevelDB,
                 enabled: model.remoteInputEnabled,
-                showTestHint: model.showX6MicHint && model.hidConnected && model.bleConnected,
                 onToggle: model.setRemoteInputEnabled
             )
             .frame(width: 224)
@@ -628,7 +615,7 @@ private struct StudioMixerView: View {
             )
             StatusRow(
                 title: L10n.text("遥控器连接", "Remote connection"),
-                value: x6Value,
+                value: remoteConnectionValue,
                 tone: model.hidConnected && model.bleConnected ? .good : .warning,
                 action: model.hidConnected && model.bleConnected
                     ? nil
@@ -667,7 +654,7 @@ private struct StudioMixerView: View {
         .background(panelBackground(ConsoleTheme.surface, radius: 19))
     }
 
-    private var x6Value: String {
+    private var remoteConnectionValue: String {
         if model.hidConnected && model.bleConnected {
             return model.remoteStreaming
                 ? L10n.text("HID · BLE · 语音流传输中", "HID · BLE · Streaming")
@@ -849,13 +836,6 @@ private struct KeyMappingView: View {
                 selected: selectedDevice == .chromecast
             ) { selectedDevice = .chromecast }
 
-            DeviceSelectionRow(
-                title: SupportedRemoteID.x6.title,
-                signature: SupportedRemoteID.x6.signature,
-                connected: model.x6Connected,
-                selected: selectedDevice == .x6
-            ) { selectedDevice = .x6 }
-
             Spacer()
             Label(
                 L10n.text(
@@ -877,21 +857,10 @@ private struct KeyMappingView: View {
             VStack(spacing: 10) {
                 RemoteProductImage(kind: selectedDevice)
                     .frame(width: 128)
-                Text(selectedDevice == .chromecast
-                    ? L10n.text("14 个可映射键", "14 mappable buttons")
-                    : L10n.text("15 个正面可映射键", "15 mappable front buttons"))
+                Text(L10n.text("14 个可映射键", "14 mappable buttons"))
                     .font(.system(size: 10.5, weight: .medium))
                     .foregroundStyle(ConsoleTheme.secondary)
                     .multilineTextAlignment(.center)
-                if selectedDevice == .x6 {
-                    Text(L10n.text(
-                        "鼠标模式键由设备内部处理",
-                        "Mouse Mode is handled by the device"
-                    ))
-                        .font(.system(size: 9.5))
-                        .foregroundStyle(ConsoleTheme.tertiary)
-                        .multilineTextAlignment(.center)
-                }
                 Spacer()
             }
             .padding(.top, 14)

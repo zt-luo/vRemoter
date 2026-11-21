@@ -3,7 +3,7 @@
     "id": 1110,
     "tag_name": "v1.1.1",
     "name": "vRemoter 1.1.1",
-    "body": "- Chromecast tap reliability\n- Two-remote session isolation\n- X6 first-tap fix",
+    "body": "- Chromecast tap reliability\n- Audio session isolation\n- Voice buffer fixes",
     "html_url": "https://github.com/zt-luo/vRemoter/releases/tag/v1.1.1",
     "draft": false,
     "prerelease": false,

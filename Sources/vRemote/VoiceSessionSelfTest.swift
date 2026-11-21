@@ -38,7 +38,7 @@ enum VoiceSessionSelfTest {
 
     private final class Harness {
         let voiceState: FakeVoiceInputState
-        let coordinator: X6SessionCoordinator
+        let coordinator: VoiceSessionCoordinator
         var clock = Date(timeIntervalSince1970: 1_000)
         var triggerTapCount = 0
         var triggerDownCount = 0
@@ -57,7 +57,7 @@ enum VoiceSessionSelfTest {
             var triggerDownSink: (() -> Void)?
             var triggerUpSink: (() -> Void)?
             var nowSink: (() -> Date)?
-            coordinator = X6SessionCoordinator(
+            coordinator = VoiceSessionCoordinator(
                 voiceState: voiceState,
                 setRemoteRouteActive: { routeSink?($0, $1) },
                 triggerTap: { triggerSink?() },
@@ -144,9 +144,7 @@ enum VoiceSessionSelfTest {
         testLongPressCloses(checks)
         testKeyboardOpenRemoteClose(checks)
         testRemoteOpenKeyboardClose(checks)
-        testX6ReasonZeroOpens(checks)
         testChromecastReasonZeroWhileClosedIsIgnored(checks)
-        testIndependentRemoteStops(checks)
         testDebouncedRetry(checks)
         testWeTypeHoldSurvivesStartVerification(checks)
         testWeTypeKeyboardHoldCloses(checks)
@@ -238,37 +236,6 @@ enum VoiceSessionSelfTest {
         c.expect(h.triggerTapCount == 1, "keyboard close does not synthesize another trigger")
         c.expect(h.openRequests.count == 1, "stale active cannot reopen transport")
         c.expect(h.coordinator.debugSnapshot.phase == "closed", "keyboard close closes the session")
-    }
-
-    private static func testIndependentRemoteStops(_ c: CheckContext) {
-        let h = Harness()
-        h.coordinator.remoteAudioStarted(remote: .x6, reason: 0x00)
-        h.coordinator.remoteAudioStarted(
-            remote: .chromecast,
-            reason: 0x03,
-            supportsPhysicalHoldGesture: true
-        )
-        c.expect(h.triggerTapCount == 1, "second remote start does not toggle WeType twice")
-        c.expect(
-            h.coordinator.debugSnapshot.streamingRemotes == Set([.x6, .chromecast]),
-            "both remote transports are tracked independently"
-        )
-        h.coordinator.remoteAudioStopped(remote: .x6, reason: 0x00)
-        c.expect(
-            h.coordinator.debugSnapshot.streamingRemotes == Set([.chromecast]),
-            "one remote STOP does not erase the other"
-        )
-    }
-
-    private static func testX6ReasonZeroOpens(_ c: CheckContext) {
-        let h = Harness()
-        h.coordinator.remoteAudioStarted(remote: .x6, reason: 0x00)
-        c.expect(h.triggerTapCount == 1, "X6 physical reason-0 sends one open trigger")
-        c.expect(h.coordinator.debugSnapshot.phase == "open", "X6 reason-0 opens")
-        c.expect(
-            h.coordinator.debugSnapshot.streamingRemotes == Set([.x6]),
-            "X6 reason-0 keeps its physical stream"
-        )
     }
 
     private static func testChromecastReasonZeroWhileClosedIsIgnored(
