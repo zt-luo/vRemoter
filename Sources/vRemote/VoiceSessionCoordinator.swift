@@ -88,6 +88,11 @@ final class VoiceSessionCoordinator {
     private var syntheticToggleIsOpen = false
     private var sessionTriggerKey: InputTriggerKey = AppStorage.activeTriggerKey
     private var sessionTriggerMode: VoiceGestureMode = .pushToTalk
+    private var continuousRemoteSession = false
+    private var continuousRecoveryAttempted = false
+    private var continuousStopInProgress = false
+    private var suppressedRemoteButtons = Set<String>()
+    private var continuousIdleWorkItem: DispatchWorkItem?
 
     private var routeCloseWorkItem: DispatchWorkItem?
     private var startVerificationWorkItem: DispatchWorkItem?
@@ -149,6 +154,9 @@ final class VoiceSessionCoordinator {
     ) {
         let snapshot = voiceState.snapshotNow()
         let inserted = streamingRemotes.insert(remote).inserted
+        if inserted {
+            continuousRecoveryAttempted = false
+        }
         if openRequestedRemote == remote {
             openRequestedRemote = nil
             openConfirmationWorkItem?.cancel()
@@ -280,19 +288,6 @@ final class VoiceSessionCoordinator {
                 return
             }
 
-            if sessionTriggerMode == .pushToTalk {
-                // Push-to-talk hosts keep the synthetic trigger down for the
-                // whole physical gesture. Release closes both the host's
-                // recording and this remote stream in one edge; never request
-                // a persistent stream here.
-                guard phase == .opening || phase == .open else { return }
-                beginClosing(
-                    sendTrigger: syntheticTriggerIsDown,
-                    reason: "ATVV PTT release"
-                )
-                return
-            }
-
             if wasHold || gesture.recognitionWasOpen {
                 closeRecognitionFromRemote(
                     reason: wasHold
@@ -306,14 +301,23 @@ final class VoiceSessionCoordinator {
             // release. Immediately request a persistent stream from that same
             // remote. BLEBridge has already marked its local stream idle
             // before invoking this callback, so no fixed delay is necessary.
+            // First short tap: keep the host session open and request a
+            // persistent remote stream. A push-to-talk host keeps its
+            // synthetic key held; a toggle host already got its start tap on
+            // press.
             guard phase == .opening || phase == .open else { return }
             sessionRemote = remote
+            continuousRemoteSession = true
+            continuousRecoveryAttempted = false
             requestRemoteTransportOpen(
                 remote,
                 bypassDebounce: true,
                 attempt: 1
             )
-            publish(recordingStatus("遥控器持续收音", "streaming"))
+            publish(recordingStatus(
+                "遥控器持续收音 · 短按任意键停止",
+                "streaming · press any key to stop"
+            ))
             return
         }
 
@@ -322,6 +326,26 @@ final class VoiceSessionCoordinator {
             String(format: "0x%02x", reason) +
             " phase=\(phase.rawValue)"
         )
+
+        // A continuous session expects the remote stream to stay alive.
+        // Try one recovery before ending the host session.
+        if continuousRemoteSession, streamingRemotes.isEmpty {
+            if continuousRecoveryAttempted {
+                continuousRecoveryAttempted = false
+                beginClosing(
+                    sendTrigger: true,
+                    reason: "continuous stream lost"
+                )
+            } else {
+                continuousRecoveryAttempted = true
+                requestRemoteTransportOpen(
+                    remote,
+                    bypassDebounce: true,
+                    attempt: 1
+                )
+            }
+            return
+        }
 
         // Do not automatically reopen a generic transport STOP. Only the
         // proven physical-tap path above performs an immediate recovery.
@@ -338,6 +362,7 @@ final class VoiceSessionCoordinator {
     func remoteDisconnected(_ remote: VoiceRemoteID) {
         streamingRemotes.remove(remote)
         physicalVoiceGestures.removeValue(forKey: remote)
+        continuousRemoteSession = false
         if openRequestedRemote == remote {
             openRequestedRemote = nil
             openRetryWorkItem?.cancel()
@@ -482,6 +507,8 @@ final class VoiceSessionCoordinator {
         owner = .none
         sessionRemote = nil
         physicalVoiceGestures.removeAll()
+        continuousRemoteSession = false
+        continuousStopInProgress = false
         closeRouteAndTransports()
         publish("已手动关闭")
     }
@@ -549,6 +576,9 @@ final class VoiceSessionCoordinator {
                    phase == .open {
                     // WeType can briefly report idle while capture warms up.
                     // Keep the mix open while the push-to-talk key is held.
+                    if continuousRemoteSession {
+                        scheduleContinuousIdleCheck()
+                    }
                     return
                 }
                 finalizeClosed(reason: "\(voiceHost.shortTitle) inactive")
@@ -679,6 +709,10 @@ final class VoiceSessionCoordinator {
         phase = .closing
         owner = .none
         openRequestedRemote = nil
+        continuousRemoteSession = false
+        continuousStopInProgress = false
+        continuousIdleWorkItem?.cancel()
+        continuousIdleWorkItem = nil
         if sendTrigger {
             switch sessionTriggerMode {
             case .pushToTalk:
@@ -713,6 +747,8 @@ final class VoiceSessionCoordinator {
         owner = .none
         sessionRemote = nil
         physicalVoiceGestures.removeAll()
+        continuousRemoteSession = false
+        continuousStopInProgress = false
         closeRouteAndTransports()
         print("[VOICE-SESSION] closed reason=\(reason)")
     }
@@ -1001,6 +1037,8 @@ final class VoiceSessionCoordinator {
         openRetryWorkItem = nil
         openConfirmationWorkItem?.cancel()
         openConfirmationWorkItem = nil
+        continuousIdleWorkItem?.cancel()
+        continuousIdleWorkItem = nil
     }
 
     private func closeRouteAndTransports() {
@@ -1025,6 +1063,63 @@ final class VoiceSessionCoordinator {
         openRetryWorkItem = nil
         openConfirmationWorkItem?.cancel()
         openConfirmationWorkItem = nil
+        continuousIdleWorkItem?.cancel()
+        continuousIdleWorkItem = nil
+    }
+
+    /// A short press of any remote button ends a continuous session. The key
+    /// is swallowed so its mapping never fires.
+    func handleRemoteButtonDuringContinuous(
+        button: RemoteButtonDefinition,
+        remote: SupportedRemoteID,
+        isDown: Bool
+    ) -> Bool {
+        guard remote.rawValue == VoiceRemoteID.chromecast.rawValue else {
+            return false
+        }
+        if suppressedRemoteButtons.contains(button.id) {
+            if !isDown { suppressedRemoteButtons.remove(button.id) }
+            return true
+        }
+        if continuousStopInProgress {
+            if isDown {
+                suppressedRemoteButtons.insert(button.id)
+            } else {
+                suppressedRemoteButtons.remove(button.id)
+            }
+            return true
+        }
+        guard continuousRemoteSession,
+              phase == .opening || phase == .open
+        else { return false }
+        guard isDown else { return false }
+        suppressedRemoteButtons.insert(button.id)
+        continuousRemoteSession = false
+        continuousStopInProgress = true
+        print("[VOICE-SESSION] continuous stop by button=\(button.id)")
+        closeRecognitionFromRemote(reason: "remote button \(button.id)")
+        return true
+    }
+
+    private func scheduleContinuousIdleCheck() {
+        continuousIdleWorkItem?.cancel()
+        let expectedGeneration = generation
+        let work = DispatchWorkItem { [weak self] in
+            guard let self,
+                  self.generation == expectedGeneration,
+                  self.continuousRemoteSession,
+                  self.phase == .open,
+                  !self.voiceState.snapshotNow().isRecording
+            else { return }
+            self.continuousIdleWorkItem = nil
+            print("[VOICE-SESSION] WeType idle during continuous session")
+            self.beginClosing(
+                sendTrigger: true,
+                reason: "WeType idle during continuous"
+            )
+        }
+        continuousIdleWorkItem = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5, execute: work)
     }
 
     private func recordingStatus(_ suffixZH: String, _ suffixEN: String) -> String {

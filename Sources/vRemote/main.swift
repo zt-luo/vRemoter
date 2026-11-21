@@ -503,6 +503,14 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
             }
             self?.updateStatus()
         }
+        RemoteMappingStore.shared.buttonInterceptor = {
+            [weak self] button, remote, isDown in
+            self?.voiceSession.handleRemoteButtonDuringContinuous(
+                button: button,
+                remote: remote,
+                isDown: isDown
+            ) ?? false
+        }
         debugWindow.onInputTriggerChanged = { [weak self] in
             self?.inputTriggerMonitor.triggerConfigurationDidChange()
         }

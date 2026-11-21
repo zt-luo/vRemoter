@@ -149,7 +149,9 @@ enum VoiceSessionSelfTest {
         testWeTypeHoldSurvivesStartVerification(checks)
         testWeTypeKeyboardHoldCloses(checks)
         testWeTypeAdoptsExternalRecording(checks)
-        testWeTypeShortTapDoesNotReopen(checks)
+        testWeTypeShortTapKeepsStreaming(checks)
+        testAnyRemoteButtonStopsContinuous(checks)
+        testAnyRemoteButtonStopsToggleContinuous(checks)
         testRemoteSessionDoesNotCaptureSecondInput(checks)
         testKeyboardSessionCapturesSecondInput(checks)
         testForceCloseReleasesWeTypeTrigger(checks)
@@ -288,6 +290,7 @@ enum VoiceSessionSelfTest {
             "weType does not hit the one-second opening timeout"
         )
         c.expect(h.closeRequestCount == 0, "weType keeps the remote stream open")
+        h.advance(0.70)
         h.endChromecastPress()
         c.expect(h.triggerUpCount == 1, "weType release sends one keyUp")
         c.expect(
@@ -384,7 +387,7 @@ enum VoiceSessionSelfTest {
         )
     }
 
-    private static func testWeTypeShortTapDoesNotReopen(_ c: CheckContext) {
+    private static func testWeTypeShortTapKeepsStreaming(_ c: CheckContext) {
         let h = Harness()
         h.coordinator.voiceHost = .weType
         h.coordinator.triggerMode = .pushToTalk
@@ -392,14 +395,79 @@ enum VoiceSessionSelfTest {
         h.advance(0.12)
         h.endChromecastPress()
         c.expect(h.triggerDownCount == 1, "short PTT press sends keyDown")
-        c.expect(h.triggerUpCount == 1, "short PTT release sends keyUp")
+        c.expect(h.triggerUpCount == 0, "short PTT tap keeps the key held")
         c.expect(
-            h.openRequests.isEmpty,
-            "short PTT press never opens a persistent stream"
+            h.openRequests.count == 1,
+            "short PTT tap requests a persistent stream"
         )
         c.expect(
+            h.coordinator.debugSnapshot.phase == "open",
+            "short PTT tap keeps recording"
+        )
+    }
+
+    private static func testAnyRemoteButtonStopsContinuous(
+        _ c: CheckContext
+    ) {
+        let h = Harness()
+        h.coordinator.voiceHost = .weType
+        h.coordinator.triggerMode = .pushToTalk
+        h.beginChromecastPress()
+        h.advance(0.12)
+        h.endChromecastPress()
+        guard let back = RemoteProfiles.chromecastButtons.first(
+            where: { $0.id == "0B" }
+        ) else {
+            c.expect(false, "Chromecast Back button exists")
+            return
+        }
+        let consumedDown = h.coordinator.handleRemoteButtonDuringContinuous(
+            button: back,
+            remote: .chromecast,
+            isDown: true
+        )
+        let consumedUp = h.coordinator.handleRemoteButtonDuringContinuous(
+            button: back,
+            remote: .chromecast,
+            isDown: false
+        )
+        c.expect(consumedDown, "continuous stop consumes the key-down")
+        c.expect(consumedUp, "continuous stop consumes the matching key-up")
+        c.expect(h.triggerUpCount == 1, "continuous stop releases the held key")
+        c.expect(h.triggerTapCount == 0, "PTT continuous stop never taps")
+        c.expect(
             h.coordinator.debugSnapshot.phase == "closed",
-            "short PTT press closes on release"
+            "continuous stop closes the session"
+        )
+    }
+
+    private static func testAnyRemoteButtonStopsToggleContinuous(
+        _ c: CheckContext
+    ) {
+        let h = Harness()
+        h.beginChromecastPress()
+        h.advance(0.12)
+        h.endChromecastPress()
+        guard let back = RemoteProfiles.chromecastButtons.first(
+            where: { $0.id == "0B" }
+        ) else {
+            c.expect(false, "Chromecast Back button exists")
+            return
+        }
+        _ = h.coordinator.handleRemoteButtonDuringContinuous(
+            button: back,
+            remote: .chromecast,
+            isDown: true
+        )
+        _ = h.coordinator.handleRemoteButtonDuringContinuous(
+            button: back,
+            remote: .chromecast,
+            isDown: false
+        )
+        c.expect(h.triggerTapCount == 2, "toggle continuous stop sends one tap")
+        c.expect(
+            h.coordinator.debugSnapshot.phase == "closed",
+            "toggle continuous stop closes the session"
         )
     }
 

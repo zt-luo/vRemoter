@@ -497,6 +497,10 @@ final class RemoteMappingStore: ObservableObject {
     static let shared = RemoteMappingStore()
 
     @Published private(set) var revision = 0
+    /// Optional first chance to consume a remote button, used to stop a
+    /// continuous voice session without firing the button mapping.
+    var buttonInterceptor:
+        ((RemoteButtonDefinition, SupportedRemoteID, Bool) -> Bool)?
     private let defaults = UserDefaults.standard
     private let prefix = "remoteMapping."
     private let enabledPrefix = "remoteMappingEnabled."
@@ -581,6 +585,7 @@ final class RemoteMappingStore: ObservableObject {
         remote: SupportedRemoteID,
         isDown: Bool
     ) {
+        if buttonInterceptor?(button, remote, isDown) == true { return }
         let value = target(for: button, remote: remote)
         // 切换器会话期间：方向键左右重定向为 Tab / Shift+Tab（仅 keyDown 生效）。
         if AppSwitcherSession.shared.isActive,
