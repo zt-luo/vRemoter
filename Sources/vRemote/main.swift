@@ -59,6 +59,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         NSApp.setActivationPolicy(.accessory)
         voiceInputState.setHost(VoiceInputHost.weType)
         voiceSession.voiceHost = VoiceInputHost.weType
+        voiceSession.triggerMode = AppStorage.weTypeTriggerMode
         AppAnalytics.configure()
         // Keep one continuous diagnostic history.
         // Log.swift rotates at 5 MB; only the explicit menu action clears it.
@@ -504,6 +505,13 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         debugWindow.onInputTriggerChanged = { [weak self] in
             self?.inputTriggerMonitor.triggerConfigurationDidChange()
+        }
+        debugWindow.onWeTypeTriggerModeChanged = { [weak self] mode in
+            guard let self else { return }
+            self.voiceSession.forceClose()
+            self.voiceSession.triggerMode = mode
+            self.inputTriggerMonitor.triggerConfigurationDidChange()
+            self.updateStatus()
         }
         debugWindow.onRemoteMappingEnabledChanged = { [weak self] _, enabled in
             self?.chromecastHID.setRemappingEnabled(enabled)

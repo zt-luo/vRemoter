@@ -222,7 +222,8 @@ private final class ConsoleViewModel: ObservableObject {
     @Published var inputMonitoringGranted = false
     @Published var bluetoothGranted = false
     @Published var chromecastConnected = false
-    @Published var inputTriggerKey = AppStorage.inputTriggerKey
+    @Published var triggerMode = AppStorage.weTypeTriggerMode
+    @Published var activeTriggerKey = AppStorage.activeTriggerKey
     @Published var activeModal: ConsoleModal?
     var onStopMicrophone: (() -> Void)?
     var onRestartApp: (() -> Void)?
@@ -230,14 +231,24 @@ private final class ConsoleViewModel: ObservableObject {
     var onRemoteInputEnabledChanged: ((Bool) -> Void)?
     var onSecondInputDeviceChanged: ((String) -> Void)?
     var onInputTriggerChanged: (() -> Void)?
+    var onWeTypeTriggerModeChanged: ((VoiceGestureMode) -> Void)?
     var onRemoteMappingEnabledChanged: ((SupportedRemoteID, Bool) -> Void)?
 
     var voiceUsesVRemote: Bool { voiceInput.contains("vRemoteDr 2ch") }
 
     func setInputTrigger(_ trigger: InputTriggerKey) {
-        guard inputTriggerKey != trigger else { return }
-        inputTriggerKey = trigger
-        AppStorage.inputTriggerKey = trigger
+        guard activeTriggerKey != trigger else { return }
+        activeTriggerKey = trigger
+        AppStorage.setTriggerKey(trigger, for: triggerMode)
+        onInputTriggerChanged?()
+    }
+
+    func setWeTypeTriggerMode(_ mode: VoiceGestureMode) {
+        guard triggerMode != mode else { return }
+        triggerMode = mode
+        AppStorage.weTypeTriggerMode = mode
+        activeTriggerKey = AppStorage.triggerKey(for: mode)
+        onWeTypeTriggerModeChanged?(mode)
         onInputTriggerChanged?()
     }
 
@@ -313,6 +324,7 @@ final class DebugWindowController: NSWindowController, NSWindowDelegate {
     var onRemoteInputEnabledChanged: ((Bool) -> Void)?
     var onSecondInputDeviceChanged: ((String) -> Void)?
     var onInputTriggerChanged: (() -> Void)?
+    var onWeTypeTriggerModeChanged: ((VoiceGestureMode) -> Void)?
     var onRemoteMappingEnabledChanged: ((SupportedRemoteID, Bool) -> Void)?
 
     private let model = ConsoleViewModel()
@@ -357,6 +369,9 @@ final class DebugWindowController: NSWindowController, NSWindowDelegate {
         }
         model.onInputTriggerChanged = { [weak self] in
             self?.onInputTriggerChanged?()
+        }
+        model.onWeTypeTriggerModeChanged = { [weak self] mode in
+            self?.onWeTypeTriggerModeChanged?(mode)
         }
         model.onRemoteMappingEnabledChanged = { [weak self] remote, enabled in
             self?.onRemoteMappingEnabledChanged?(remote, enabled)
@@ -771,6 +786,25 @@ private struct KeyMappingView: View {
                         .font(.system(size: 17, weight: .semibold))
                         .foregroundStyle(ConsoleTheme.text)
                 }
+                HStack(spacing: 8) {
+                    Text(L10n.text("触发方式", "Trigger mode"))
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundStyle(ConsoleTheme.secondary)
+                    Picker(
+                        L10n.text("触发方式", "Trigger mode"),
+                        selection: Binding(
+                            get: { model.triggerMode },
+                            set: model.setWeTypeTriggerMode
+                        )
+                    ) {
+                        ForEach(VoiceGestureMode.allCases) { mode in
+                            Text(mode.title).tag(mode)
+                        }
+                    }
+                    .labelsHidden()
+                    .frame(width: 132)
+                    .disabled(model.remoteStreaming)
+                }
                 Text(voiceTriggerDescription)
                     .font(.system(size: 12))
                     .foregroundStyle(ConsoleTheme.secondary)
@@ -785,9 +819,11 @@ private struct KeyMappingView: View {
             Spacer(minLength: 10)
             VStack(alignment: .trailing, spacing: 7) {
                 Picker(
-                    L10n.text("触发键", "Trigger"),
+                    model.triggerMode == .pushToTalk
+                        ? L10n.text("按住说话键", "Push-to-talk key")
+                        : L10n.text("点按切换键", "Toggle key"),
                     selection: Binding(
-                        get: { model.inputTriggerKey },
+                        get: { model.activeTriggerKey },
                         set: model.setInputTrigger
                     )
                 ) {
@@ -798,7 +834,7 @@ private struct KeyMappingView: View {
                 .labelsHidden()
                 .frame(width: 180)
                 .disabled(model.remoteStreaming)
-                if model.inputTriggerKey == .function {
+                if model.activeTriggerKey == .function {
                     Label(
                         L10n.text("Fn 需在本机测试", "Test Fn on this Mac"),
                         systemImage: "exclamationmark.triangle.fill"
@@ -817,10 +853,18 @@ private struct KeyMappingView: View {
     }
 
     private var voiceTriggerDescription: String {
-        L10n.text(
-            "遥控器按住说话、松手结束。微信输入法「按住说话」默认是右 Option，请与这里保持一致；麦克风请在微信输入法 → 语音输入 → 麦克风里选择 vRemoteDr 2ch。键盘触发左右都识别，遥控器按所选侧合成。",
-            "Hold the remote to talk and release to stop. WeType uses right Option for push-to-talk by default; keep this trigger in sync. Choose vRemoteDr 2ch in WeType → Voice Input → Microphone. The keyboard accepts either side; the remote synthesizes the selected side."
-        )
+        switch model.triggerMode {
+        case .pushToTalk:
+            L10n.text(
+                "遥控器按住说话、松手结束。微信输入法「按住说话」默认是右 Option，请与这里保持一致；麦克风请在微信输入法 → 语音输入 → 麦克风里选择 vRemoteDr 2ch。键盘只识别所选侧，遥控器按所选侧合成。",
+                "Hold the remote to talk and release to stop. WeType's push-to-talk shortcut defaults to right Option; keep this trigger in sync. Choose vRemoteDr 2ch in WeType → Voice Input → Microphone. The keyboard listens to the selected side only; the remote synthesizes that side."
+            )
+        case .toggle:
+            L10n.text(
+                "遥控器按下开始、再按停止。微信输入法「点按切换」默认是左 Option，请与这里保持一致；麦克风请在微信输入法 → 语音输入 → 麦克风里选择 vRemoteDr 2ch。键盘只识别所选侧，遥控器按所选侧合成。",
+                "Press the remote to start and again to stop. WeType's tap-to-toggle shortcut defaults to left Option; keep this trigger in sync. Choose vRemoteDr 2ch in WeType → Voice Input → Microphone. The keyboard listens to the selected side only; the remote synthesizes that side."
+            )
+        }
     }
 
     private var devicePanel: some View {

@@ -65,9 +65,9 @@ final class VoiceSessionCoordinator {
 
     private let voiceState: any VoiceInputStateProviding
     private let setRemoteRouteActive: (Bool, Bool) -> Void
-    private let triggerTap: () -> Void
-    private let triggerDown: () -> Void
-    private let triggerUp: () -> Void
+    private let triggerTap: (InputTriggerKey) -> Void
+    private let triggerDown: (InputTriggerKey) -> Void
+    private let triggerUp: (InputTriggerKey) -> Void
     private let now: () -> Date
 
     /// WeType owns this session and is driven by the remote / keyboard gesture.
@@ -85,6 +85,9 @@ final class VoiceSessionCoordinator {
     private var openRequestedRemote: VoiceRemoteID?
     private var physicalVoiceGestures = [VoiceRemoteID: PhysicalVoiceGesture]()
     private var syntheticTriggerIsDown = false
+    private var syntheticToggleIsOpen = false
+    private var sessionTriggerKey: InputTriggerKey = AppStorage.activeTriggerKey
+    private var sessionTriggerMode: VoiceGestureMode = .pushToTalk
 
     private var routeCloseWorkItem: DispatchWorkItem?
     private var startVerificationWorkItem: DispatchWorkItem?
@@ -106,9 +109,9 @@ final class VoiceSessionCoordinator {
         setRemoteRouteActive: @escaping (Bool, Bool) -> Void = {
             AudioPipe.shared.setRemoteActive($0, captureSecondInput: $1)
         },
-        triggerTap: @escaping () -> Void = { Key.triggerTap() },
-        triggerDown: @escaping () -> Void = { Key.triggerDown() },
-        triggerUp: @escaping () -> Void = { Key.triggerUp() },
+        triggerTap: @escaping (InputTriggerKey) -> Void = { Key.triggerTap($0) },
+        triggerDown: @escaping (InputTriggerKey) -> Void = { Key.triggerDown($0) },
+        triggerUp: @escaping (InputTriggerKey) -> Void = { Key.triggerUp($0) },
         now: @escaping () -> Date = Date.init
     ) {
         self.voiceState = voiceState
@@ -277,7 +280,7 @@ final class VoiceSessionCoordinator {
                 return
             }
 
-            if triggerMode == .pushToTalk {
+            if sessionTriggerMode == .pushToTalk {
                 // Push-to-talk hosts keep the synthetic trigger down for the
                 // whole physical gesture. Release closes both the host's
                 // recording and this remote stream in one edge; never request
@@ -345,7 +348,7 @@ final class VoiceSessionCoordinator {
 
         guard sessionRemote == remote else { return }
 
-        if triggerMode == .pushToTalk {
+        if sessionTriggerMode == .pushToTalk {
             // A disconnected remote can never deliver its release edge, so the
             // synthetic trigger must be released here instead of sticking down.
             if phase == .opening || phase == .open {
@@ -359,15 +362,19 @@ final class VoiceSessionCoordinator {
             return
         }
 
-        sessionRemote = preferredRemoteProvider?()
-        guard phase == .opening || phase == .open,
-              let replacement = sessionRemote
-        else { return }
-        requestRemoteTransportOpen(
-            replacement,
-            bypassDebounce: false,
-            attempt: 1
-        )
+        if syntheticToggleIsOpen {
+            beginClosing(sendTrigger: true, reason: "remote disconnected")
+            return
+        }
+        if phase == .opening || phase == .open,
+           let replacement = preferredRemoteProvider?() {
+            sessionRemote = replacement
+            requestRemoteTransportOpen(
+                replacement,
+                bypassDebounce: false,
+                attempt: 1
+            )
+        }
     }
 
     func remoteMicrophoneOpenFailed(remote: VoiceRemoteID, code: UInt16) {
@@ -437,6 +444,12 @@ final class VoiceSessionCoordinator {
             "[TRIGGER] UP source=keyboard phase=\(phase.rawValue) " +
             "owner=\(owner.rawValue)"
         )
+        if sessionTriggerMode == .toggle {
+            // The physical key itself toggled WeType; key-up must not close.
+            reconcileSoon(after: 0.03)
+            reconcileSoon(after: 0.15)
+            return
+        }
         if voiceHost == .weType {
             // The physical key-up already reached WeType. If its recording
             // state is already idle, close now; otherwise let the snapshot
@@ -463,6 +476,7 @@ final class VoiceSessionCoordinator {
     func forceClose() {
         generation &+= 1
         cancelScheduledWork()
+        stopSyntheticToggleIfNeeded()
         releaseSyntheticTrigger()
         phase = .closed
         owner = .none
@@ -605,15 +619,19 @@ final class VoiceSessionCoordinator {
         phase = .opening
         self.owner = owner
         sessionRemote = remote
+        sessionTriggerKey = AppStorage.activeTriggerKey
+        sessionTriggerMode = triggerMode
         activateRemoteRoute()
         if sendTrigger {
-            if triggerMode == .pushToTalk {
+            switch sessionTriggerMode {
+            case .pushToTalk:
                 if !syntheticTriggerIsDown {
                     syntheticTriggerIsDown = true
-                    triggerDown()
+                    triggerDown(sessionTriggerKey)
                 }
-            } else {
-                triggerTap()
+            case .toggle:
+                triggerTap(sessionTriggerKey)
+                syntheticToggleIsOpen = true
             }
         }
         if requestTransportImmediately {
@@ -662,11 +680,17 @@ final class VoiceSessionCoordinator {
         owner = .none
         openRequestedRemote = nil
         if sendTrigger {
-            if triggerMode == .pushToTalk {
+            switch sessionTriggerMode {
+            case .pushToTalk:
                 releaseSyntheticTrigger()
-            } else {
-                triggerTap()
+            case .toggle:
+                triggerTap(sessionTriggerKey)
+                syntheticToggleIsOpen = false
             }
+        } else {
+            // A physical shortcut already toggled the host; never send a
+            // second synthetic tap on close.
+            syntheticToggleIsOpen = false
         }
         scheduleRouteClose(after: 0.10)
         scheduleCloseVerification(for: generation)
@@ -683,6 +707,7 @@ final class VoiceSessionCoordinator {
     private func finalizeClosed(reason: String) {
         generation &+= 1
         cancelScheduledWork()
+        stopSyntheticToggleIfNeeded()
         releaseSyntheticTrigger()
         phase = .closed
         owner = .none
@@ -692,10 +717,16 @@ final class VoiceSessionCoordinator {
         print("[VOICE-SESSION] closed reason=\(reason)")
     }
 
+    private func stopSyntheticToggleIfNeeded() {
+        guard syntheticToggleIsOpen else { return }
+        syntheticToggleIsOpen = false
+        triggerTap(sessionTriggerKey)
+    }
+
     private func releaseSyntheticTrigger() {
         guard syntheticTriggerIsDown else { return }
         syntheticTriggerIsDown = false
-        triggerUp()
+        triggerUp(sessionTriggerKey)
     }
 
     // MARK: - Remote transport requests

@@ -44,6 +44,12 @@ enum InputTriggerKey: String, CaseIterable, Identifiable {
         }
     }
 
+    /// WeType stores its shortcut per side, and the two modes may use
+    /// opposite sides of the same modifier. Accept only the selected side.
+    func matchesPhysicalKeyCode(_ keyCode: Int64) -> Bool {
+        Int64(primaryKeyCode) == keyCode
+    }
+
     /// The side synthesized for the remote voice key.
     var primaryKeyCode: CGKeyCode {
         switch self {
@@ -92,17 +98,17 @@ enum Key {
     /// keyboards, Bluetooth buttons, and external remappers.
     static let syntheticMarker: Int64 = 0x4D_49_52_42 // "MIRB"
 
-    static func triggerDown(_ trigger: InputTriggerKey = AppStorage.inputTriggerKey) {
+    static func triggerDown(_ trigger: InputTriggerKey = AppStorage.activeTriggerKey) {
         post(trigger: trigger, keyDown: true)
     }
 
-    static func triggerUp(_ trigger: InputTriggerKey = AppStorage.inputTriggerKey) {
+    static func triggerUp(_ trigger: InputTriggerKey = AppStorage.activeTriggerKey) {
         post(trigger: trigger, keyDown: false)
     }
 
     /// A deliberate short modifier click for toggle-mode input methods.
     static func triggerTap(
-        _ trigger: InputTriggerKey = AppStorage.inputTriggerKey,
+        _ trigger: InputTriggerKey = AppStorage.activeTriggerKey,
         completion: (() -> Void)? = nil
     ) {
         triggerDown(trigger)

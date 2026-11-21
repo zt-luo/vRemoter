@@ -36,9 +36,18 @@ enum VoiceInputHost: String, CaseIterable, Identifiable, Codable {
     }
 }
 
-enum VoiceGestureMode {
+enum VoiceGestureMode: String, CaseIterable, Identifiable {
+    /// The synthetic trigger stays held for the whole session.
+    case pushToTalk
     /// A short synthetic tap toggles the host's voice session.
     case toggle
-    /// The synthetic trigger stays held for the whole physical gesture.
-    case pushToTalk
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .pushToTalk: L10n.text("按住说话", "Push to Talk")
+        case .toggle: L10n.text("点按切换", "Tap to Toggle")
+        }
+    }
 }

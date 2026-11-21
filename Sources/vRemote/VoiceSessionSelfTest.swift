@@ -53,16 +53,16 @@ enum VoiceSessionSelfTest {
         init(initialState: VoiceInputStateMonitor.State = .inactive) {
             voiceState = FakeVoiceInputState(state: initialState)
             var routeSink: ((Bool, Bool) -> Void)?
-            var triggerSink: (() -> Void)?
-            var triggerDownSink: (() -> Void)?
-            var triggerUpSink: (() -> Void)?
+            var triggerSink: ((InputTriggerKey) -> Void)?
+            var triggerDownSink: ((InputTriggerKey) -> Void)?
+            var triggerUpSink: ((InputTriggerKey) -> Void)?
             var nowSink: (() -> Date)?
             coordinator = VoiceSessionCoordinator(
                 voiceState: voiceState,
                 setRemoteRouteActive: { routeSink?($0, $1) },
-                triggerTap: { triggerSink?() },
-                triggerDown: { triggerDownSink?() },
-                triggerUp: { triggerUpSink?() },
+                triggerTap: { triggerSink?($0) },
+                triggerDown: { triggerDownSink?($0) },
+                triggerUp: { triggerUpSink?($0) },
                 now: { nowSink?() ?? Date(timeIntervalSince1970: 0) }
             )
             coordinator.triggerMode = .toggle
@@ -70,13 +70,13 @@ enum VoiceSessionSelfTest {
                 self?.routeChanges.append(active)
                 self?.routeCaptureFlags.append(captureSecond)
             }
-            triggerSink = { [weak self] in
+            triggerSink = { [weak self] _ in
                 self?.triggerTapCount += 1
             }
-            triggerDownSink = { [weak self] in
+            triggerDownSink = { [weak self] _ in
                 self?.triggerDownCount += 1
             }
-            triggerUpSink = { [weak self] in
+            triggerUpSink = { [weak self] _ in
                 self?.triggerUpCount += 1
             }
             nowSink = { [weak self] in
@@ -155,6 +155,9 @@ enum VoiceSessionSelfTest {
         testForceCloseReleasesWeTypeTrigger(checks)
         testTriggerDeviceFlags(checks)
         testRepeatableTargets(checks)
+        testTriggerSideMatching(checks)
+        testToggleForceCloseStops(checks)
+        testToggleKeyboardKeyUpKeepsSession(checks)
         emit("[SELF-TEST] completed failures=\(checks.failures)")
         return checks.failures == 0
     }
@@ -498,5 +501,55 @@ enum VoiceSessionSelfTest {
             "right shift maps to keyCode 0x3C and device bit 0x04"
         )
     }
+    private static func testTriggerSideMatching(_ c: CheckContext) {
+        c.expect(
+            InputTriggerKey.option.matchesPhysicalKeyCode(0x3A),
+            "left Option matches the left key code"
+        )
+        c.expect(
+            !InputTriggerKey.option.matchesPhysicalKeyCode(0x3D),
+            "left Option ignores the right key code"
+        )
+        c.expect(
+            InputTriggerKey.optionRight.matchesPhysicalKeyCode(0x3D),
+            "right Option matches the right key code"
+        )
+        c.expect(
+            !InputTriggerKey.optionRight.matchesPhysicalKeyCode(0x3A),
+            "right Option ignores the left key code"
+        )
+        c.expect(
+            InputTriggerKey.function.matchesPhysicalKeyCode(0x3F),
+            "Fn matches its key code"
+        )
+    }
+
+    private static func testToggleForceCloseStops(_ c: CheckContext) {
+        let h = Harness()
+        h.beginChromecastPress()
+        c.expect(h.triggerTapCount == 1, "toggle open sends one tap")
+        h.coordinator.forceClose()
+        c.expect(h.triggerTapCount == 2, "forceClose sends the stop tap")
+        c.expect(
+            h.coordinator.debugSnapshot.phase == "closed",
+            "forceClose closes a toggle session"
+        )
+    }
+
+    private static func testToggleKeyboardKeyUpKeepsSession(_ c: CheckContext) {
+        let h = Harness()
+        h.coordinator.triggerDownObserved(isSynthetic: false)
+        h.voiceState.emit(.active)
+        h.coordinator.triggerUpObserved(isSynthetic: false)
+        c.expect(
+            h.coordinator.debugSnapshot.phase == "open",
+            "toggle keyboard key-up keeps the session"
+        )
+        c.expect(
+            h.triggerTapCount == 0,
+            "physical toggle key never synthesizes a tap"
+        )
+    }
+
 }
 #endif

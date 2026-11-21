@@ -91,7 +91,7 @@ final class InputTriggerMonitor {
 
     func triggerConfigurationDidChange() {
         triggerKeysDown.removeAll()
-        print("[INPUT-TRIGGER] listening for \(AppStorage.inputTriggerKey.title)")
+        print("[INPUT-TRIGGER] listening for \(AppStorage.activeTriggerKey.title)")
     }
 
     func stop() {
@@ -109,8 +109,8 @@ final class InputTriggerMonitor {
     ) {
         let keyCode = event.getIntegerValueField(.keyboardEventKeycode)
         guard !isSynthetic else { return }
-        let trigger = AppStorage.inputTriggerKey
-        guard trigger.keyCodes.contains(keyCode) else { return }
+        let trigger = AppStorage.activeTriggerKey
+        guard trigger.matchesPhysicalKeyCode(keyCode) else { return }
 
         let isDown: Bool
         switch type {

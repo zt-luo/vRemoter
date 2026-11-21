@@ -5,8 +5,10 @@ enum AppStorage {
     static let recordingEnabledKey = "recordingEnabled"
     static let macInputEnabledKey = "macInputEnabled"
     static let remoteInputEnabledKey = "remoteInputEnabled"
-    static let inputTriggerKeyKey = "inputTriggerKey"
     static let secondInputDeviceUIDKey = "secondInputDeviceUID"
+    static let weTypeTriggerModeKey = "weTypeTriggerMode"
+    static let weTypePTTTriggerKeyKey = "weTypePTTTriggerKey"
+    static let weTypeToggleTriggerKeyKey = "weTypeToggleTriggerKey"
 
     static let logsDirectory: URL = {
         FileManager.default.homeDirectoryForCurrentUser
@@ -34,7 +36,9 @@ enum AppStorage {
             recordingEnabledKey: false,
             macInputEnabledKey: true,
             remoteInputEnabledKey: true,
-            inputTriggerKeyKey: InputTriggerKey.option.rawValue,
+            weTypeTriggerModeKey: VoiceGestureMode.pushToTalk.rawValue,
+            weTypePTTTriggerKeyKey: InputTriggerKey.optionRight.rawValue,
+            weTypeToggleTriggerKeyKey: InputTriggerKey.option.rawValue,
             secondInputDeviceUIDKey: "",
         ])
         ensureDirectory(logsDirectory)
@@ -64,13 +68,51 @@ enum AppStorage {
         set { UserDefaults.standard.set(newValue, forKey: remoteInputEnabledKey) }
     }
 
-    static var inputTriggerKey: InputTriggerKey {
+    static var weTypeTriggerMode: VoiceGestureMode {
         get {
-            let raw = UserDefaults.standard.string(forKey: inputTriggerKeyKey)
+            let raw = UserDefaults.standard.string(forKey: weTypeTriggerModeKey)
+            return VoiceGestureMode(rawValue: raw ?? "") ?? .pushToTalk
+        }
+        set {
+            UserDefaults.standard.set(newValue.rawValue, forKey: weTypeTriggerModeKey)
+        }
+    }
+
+    static var weTypePTTTriggerKey: InputTriggerKey {
+        get {
+            let raw = UserDefaults.standard.string(forKey: weTypePTTTriggerKeyKey)
+            return InputTriggerKey(rawValue: raw ?? "") ?? .optionRight
+        }
+        set {
+            UserDefaults.standard.set(newValue.rawValue, forKey: weTypePTTTriggerKeyKey)
+        }
+    }
+
+    static var weTypeToggleTriggerKey: InputTriggerKey {
+        get {
+            let raw = UserDefaults.standard.string(forKey: weTypeToggleTriggerKeyKey)
             return InputTriggerKey(rawValue: raw ?? "") ?? .option
         }
         set {
-            UserDefaults.standard.set(newValue.rawValue, forKey: inputTriggerKeyKey)
+            UserDefaults.standard.set(newValue.rawValue, forKey: weTypeToggleTriggerKeyKey)
+        }
+    }
+
+    static var activeTriggerKey: InputTriggerKey {
+        triggerKey(for: weTypeTriggerMode)
+    }
+
+    static func triggerKey(for mode: VoiceGestureMode) -> InputTriggerKey {
+        switch mode {
+        case .pushToTalk: weTypePTTTriggerKey
+        case .toggle: weTypeToggleTriggerKey
+        }
+    }
+
+    static func setTriggerKey(_ key: InputTriggerKey, for mode: VoiceGestureMode) {
+        switch mode {
+        case .pushToTalk: weTypePTTTriggerKey = key
+        case .toggle: weTypeToggleTriggerKey = key
         }
     }
 
