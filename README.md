@@ -69,7 +69,7 @@ Chromecast Remote 已实现语音键双模式：短按第一次打开、第二�
 
 ## 目录
 
-- `Sources/vRemote/`：APP 主程序、BLE/ATVV、双麦混音、UI、更新与购买配置。
+- `Sources/vRemote/`：APP 主程序、BLE/ATVV、双麦混音、UI 与更新。
 - `Driver/`：生成 `vRemoteDriver.driver` 的实验性构建脚本。
 - `Packaging/`：APP 元数据、本地化与 PKG 安装脚本。
 - `Resources/`：APP 内置权限向导、商业入口与支持开发图片。
@@ -103,17 +103,11 @@ APP 从以下地址读取版本清单：
 - 驱动更新：将 `driver_update_required` 设为 `true`，APP 强制下载 PKG。
 - 首次安装：官网始终推荐 PKG。
 
-购买链接从以下地址动态读取：
-
-`https://updates.vincentstudio.org/vremoter/commerce.json`
-
-修改公开配置即可控制购买入口，不需要重新发布 APP。没有启用且有效的购买链接时，APP 会隐藏“购买遥控器”按钮。
-
 ## 发布前阻断项
 
 1. 当前驱动是对 BlackHole GPL v3 二进制的修改构建。公开分发前必须选择：提供驱动对应源码与构建材料，或取得适用于闭源分发的商业授权。
 2. APP、驱动与 PKG/DMG 尚需 Developer ID 签名和 notarization。
-3. 每次发布都要验证首次 PKG 安装、DMG 覆盖更新、自动检查更新、购买链接刷新和卸载/回滚。
+3. 每次发布都要验证首次 PKG 安装、DMG 覆盖更新、自动检查更新和卸载/回滚。
 
 ## 相关文档
 
