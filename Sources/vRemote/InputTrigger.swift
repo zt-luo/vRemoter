@@ -100,7 +100,7 @@ enum Key {
         post(trigger: trigger, keyDown: false)
     }
 
-    /// A deliberate short modifier click for Doubao's toggle mode.
+    /// A deliberate short modifier click for toggle-mode input methods.
     static func triggerTap(
         _ trigger: InputTriggerKey = AppStorage.inputTriggerKey,
         completion: (() -> Void)? = nil

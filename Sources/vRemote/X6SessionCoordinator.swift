@@ -13,23 +13,23 @@ enum RemoteMicrophoneOpenResult: Equatable {
     case failed(String)
 }
 
-protocol DoubaoAudioStateProviding: AnyObject {
-    var onSnapshotChanged: ((DoubaoAudioStateMonitor.Snapshot) -> Void)? {
+protocol VoiceInputStateProviding: AnyObject {
+    var onSnapshotChanged: ((VoiceInputStateMonitor.Snapshot) -> Void)? {
         get set
     }
 
     func start()
     func stop()
-    func snapshotNow() -> DoubaoAudioStateMonitor.Snapshot
+    func snapshotNow() -> VoiceInputStateMonitor.Snapshot
 }
 
-extension DoubaoAudioStateMonitor: DoubaoAudioStateProviding {}
+extension VoiceInputStateMonitor: VoiceInputStateProviding {}
 
 /// Coordinates the input-method toggle, supported remote gestures, and each
 /// remote's independent ATVV transport.
 ///
 /// A transport START/STOP is never itself a keyboard toggle. A physical
-/// keyboard trigger already reaches Doubao. A remote gesture synthesizes
+/// keyboard trigger already reaches WeType. A remote gesture synthesizes
 /// exactly one trigger only when it changes the intended recognition state.
 final class X6SessionCoordinator {
     private enum Phase: String {
@@ -64,16 +64,18 @@ final class X6SessionCoordinator {
     private static let closeVerificationTimeout: TimeInterval = 1.2
     private static let maximumOpenAttempts = 3
 
-    private let doubaoState: any DoubaoAudioStateProviding
+    private let voiceState: any VoiceInputStateProviding
     private let setRemoteRouteActive: (Bool, Bool) -> Void
     private let triggerTap: () -> Void
     private let triggerDown: () -> Void
     private let triggerUp: () -> Void
     private let now: () -> Date
 
-    /// Which input method owns this session. Doubao is observable; WeType is
-    /// driven entirely by the remote / keyboard gesture.
-    var voiceHost: VoiceInputHost = .doubao
+    /// WeType owns this session and is driven by the remote / keyboard gesture.
+    var voiceHost: VoiceInputHost = .weType
+    /// How the input method's shortcut is synthesized. WeType currently uses
+    /// push-to-talk; the toggle path remains available for tap-to-continue.
+    var triggerMode: VoiceGestureMode = .pushToTalk
 
     private var phase: Phase = .closed
     private var owner: Owner = .none
@@ -94,14 +96,14 @@ final class X6SessionCoordinator {
     var preferredRemoteProvider: (() -> VoiceRemoteID?)?
     /// Called before the snapshot is applied to session logic. The UI uses it
     /// to refresh the host device summary without changing session state.
-    var onSnapshotObserved: ((DoubaoAudioStateMonitor.Snapshot) -> Void)?
+    var onSnapshotObserved: ((VoiceInputStateMonitor.Snapshot) -> Void)?
     var onMicrophoneOpenRequested:
         ((VoiceRemoteID, Bool) -> RemoteMicrophoneOpenResult)?
     var onMicrophoneCloseRequested: (() -> Void)?
     var onStateChanged: ((String) -> Void)?
 
     init(
-        doubaoState: any DoubaoAudioStateProviding,
+        voiceState: any VoiceInputStateProviding,
         setRemoteRouteActive: @escaping (Bool, Bool) -> Void = {
             AudioPipe.shared.setRemoteActive($0, captureSecondInput: $1)
         },
@@ -110,7 +112,7 @@ final class X6SessionCoordinator {
         triggerUp: @escaping () -> Void = { Key.triggerUp() },
         now: @escaping () -> Date = Date.init
     ) {
-        self.doubaoState = doubaoState
+        self.voiceState = voiceState
         self.setRemoteRouteActive = setRemoteRouteActive
         self.triggerTap = triggerTap
         self.triggerDown = triggerDown
@@ -129,11 +131,11 @@ final class X6SessionCoordinator {
     }
 
     func start() {
-        doubaoState.onSnapshotChanged = { [weak self] snapshot in
+        voiceState.onSnapshotChanged = { [weak self] snapshot in
             self?.onSnapshotObserved?(snapshot)
-            self?.handleDoubaoSnapshot(snapshot)
+            self?.handleVoiceSnapshot(snapshot)
         }
-        doubaoState.start()
+        voiceState.start()
     }
 
     // MARK: - ATVV transport
@@ -143,7 +145,7 @@ final class X6SessionCoordinator {
         reason: UInt8,
         supportsPhysicalHoldGesture: Bool = false
     ) {
-        let snapshot = doubaoState.snapshotNow()
+        let snapshot = voiceState.snapshotNow()
         let inserted = streamingRemotes.insert(remote).inserted
         if openRequestedRemote == remote {
             openRequestedRemote = nil
@@ -199,7 +201,7 @@ final class X6SessionCoordinator {
             "[VOICE-SESSION] AUDIO_START remote=\(remote.rawValue) reason=" +
             String(format: "0x%02x", reason) +
             " phase=\(phase.rawValue) owner=\(owner.rawValue) " +
-            "doubaoBefore=\(snapshot.state.rawValue) " +
+            "voiceBefore=\(snapshot.state.rawValue) " +
             "device=\(snapshot.deviceSummary)"
         )
 
@@ -279,7 +281,7 @@ final class X6SessionCoordinator {
                 return
             }
 
-            if voiceHost.gestureMode == .pushToTalk {
+            if triggerMode == .pushToTalk {
                 // Push-to-talk hosts keep the synthetic trigger down for the
                 // whole physical gesture. Release closes both the host's
                 // recording and this remote stream in one edge; never request
@@ -348,7 +350,7 @@ final class X6SessionCoordinator {
 
         guard sessionRemote == remote else { return }
 
-        if voiceHost.gestureMode == .pushToTalk {
+        if triggerMode == .pushToTalk {
             // A disconnected remote can never deliver its release edge, so the
             // synthetic trigger must be released here instead of sticking down.
             if phase == .opening || phase == .open {
@@ -399,11 +401,11 @@ final class X6SessionCoordinator {
 
     // MARK: - Physical keyboard trigger
 
-    /// Called before the real physical trigger reaches Doubao. It updates the
+    /// Called before the real physical trigger reaches WeType. It updates the
     /// remote transport only; it never synthesizes a second keyboard event.
     func triggerDownObserved(isSynthetic: Bool) {
         guard !isSynthetic else { return }
-        let snapshot = doubaoState.snapshotNow()
+        let snapshot = voiceState.snapshotNow()
         let shouldOpen: Bool
         switch phase {
         case .closed:
@@ -424,7 +426,7 @@ final class X6SessionCoordinator {
             "[TRIGGER] DOWN source=keyboard action=" +
             (shouldOpen ? "open" : "close") +
             " phase=\(phase.rawValue) " +
-            "doubaoBefore=\(snapshot.state.rawValue) " +
+            "voiceBefore=\(snapshot.state.rawValue) " +
             "device=\(snapshot.deviceSummary)"
         )
 
@@ -437,7 +439,7 @@ final class X6SessionCoordinator {
                 owner: .keyboard,
                 remote: remote,
                 sendTrigger: false,
-                requestTransportImmediately: voiceHost == .doubao
+                requestTransportImmediately: false
             )
         } else {
             beginClosing(sendTrigger: false, reason: "keyboard trigger")
@@ -455,7 +457,7 @@ final class X6SessionCoordinator {
             // state is already idle, close now; otherwise let the snapshot
             // callback close when WeType stops.
             if phase == .opening || phase == .open {
-                if doubaoState.snapshotNow().isRecording {
+                if voiceState.snapshotNow().isRecording {
                     reconcileSoon(after: 0.03)
                     reconcileSoon(after: 0.15)
                 } else {
@@ -487,13 +489,13 @@ final class X6SessionCoordinator {
 
     func stop() {
         forceClose()
-        doubaoState.stop()
+        voiceState.stop()
     }
 
-    // MARK: - Doubao observation
+    // MARK: - Voice input observation
 
-    private func handleDoubaoSnapshot(
-        _ snapshot: DoubaoAudioStateMonitor.Snapshot
+    private func handleVoiceSnapshot(
+        _ snapshot: VoiceInputStateMonitor.Snapshot
     ) {
         switch snapshot.state {
         case .active:
@@ -527,7 +529,7 @@ final class X6SessionCoordinator {
 
             case .closing:
                 // CoreAudio can remain active briefly after the trigger has
-                // toggled Doubao off. Never reinterpret this stale edge as a
+                // toggled the host off. Never reinterpret this stale edge as a
                 // fresh external opening.
                 print(
                     "[VOICE-SESSION] active snapshot ignored while closing"
@@ -573,7 +575,7 @@ final class X6SessionCoordinator {
     }
 
     private func adoptExternalActivation(
-        _ snapshot: DoubaoAudioStateMonitor.Snapshot
+        _ snapshot: VoiceInputStateMonitor.Snapshot
     ) {
         generation &+= 1
         cancelScheduledWork()
@@ -585,13 +587,6 @@ final class X6SessionCoordinator {
             "[VOICE-SESSION] \(voiceHost.shortTitle) external activation " +
             "adopted device=\(snapshot.deviceSummary)"
         )
-        if voiceHost == .doubao, let remote = sessionRemote {
-            requestRemoteTransportOpen(
-                remote,
-                bypassDebounce: false,
-                attempt: 1
-            )
-        }
         publish(recordingStatus(
             snapshot.deviceSummary,
             snapshot.deviceSummary
@@ -627,7 +622,7 @@ final class X6SessionCoordinator {
         sessionRemote = remote
         activateRemoteRoute()
         if sendTrigger {
-            if voiceHost.gestureMode == .pushToTalk {
+            if triggerMode == .pushToTalk {
                 if !syntheticTriggerIsDown {
                     syntheticTriggerIsDown = true
                     triggerDown()
@@ -682,7 +677,7 @@ final class X6SessionCoordinator {
         owner = .none
         openRequestedRemote = nil
         if sendTrigger {
-            if voiceHost.gestureMode == .pushToTalk {
+            if triggerMode == .pushToTalk {
                 releaseSyntheticTrigger()
             } else {
                 triggerTap()
@@ -875,9 +870,9 @@ final class X6SessionCoordinator {
                   self.phase == .opening
             else { return }
             self.startVerificationWorkItem = nil
-            let snapshot = self.doubaoState.snapshotNow()
+            let snapshot = self.voiceState.snapshotNow()
             if snapshot.isRecording {
-                self.handleDoubaoSnapshot(snapshot)
+                self.handleVoiceSnapshot(snapshot)
                 return
             }
             self.finalizeClosed(reason: "opening timeout")
@@ -909,7 +904,7 @@ final class X6SessionCoordinator {
                   self.phase == .closing
             else { return }
             self.closeVerificationWorkItem = nil
-            let snapshot = self.doubaoState.snapshotNow()
+            let snapshot = self.voiceState.snapshotNow()
             if snapshot.isRecording {
                 // The requested close did not become observable. Follow the
                 // real CoreAudio state without synthesizing another trigger.
@@ -947,14 +942,14 @@ final class X6SessionCoordinator {
         let expectedGeneration = generation
         DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
             guard let self, self.generation == expectedGeneration else { return }
-            self.handleDoubaoSnapshot(self.doubaoState.snapshotNow())
+            self.handleVoiceSnapshot(self.voiceState.snapshotNow())
         }
     }
 
     private func activateRemoteRoute() {
         routeCloseWorkItem?.cancel()
         routeCloseWorkItem = nil
-        let captureSecond = voiceHost == .doubao || owner == .keyboard
+        let captureSecond = owner == .keyboard
         if routeActive {
             // The owner can change while the route is already open (for
             // example a keyboard session followed by a remote press). Refresh

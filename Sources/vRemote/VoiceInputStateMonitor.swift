@@ -6,9 +6,9 @@ import Foundation
 ///
 /// This is deliberately independent from the remote-button state machine.
 /// `kAudioProcessPropertyIsRunningInput` is the source of truth for whether
-/// Doubao is currently recording, and `kAudioProcessPropertyDevices` tells us
+/// the input method is currently recording, and `kAudioProcessPropertyDevices` tells us
 /// which input device it actually opened.
-final class DoubaoAudioStateMonitor {
+final class VoiceInputStateMonitor {
     enum State: String {
         case unavailable
         case inactive
@@ -43,7 +43,7 @@ final class DoubaoAudioStateMonitor {
 
     var onSnapshotChanged: ((Snapshot) -> Void)?
 
-    init(host: VoiceInputHost = .doubao) {
+    init(host: VoiceInputHost = .weType) {
         self.host = host
         self.targetBundleID = host.bundleID
     }
@@ -107,7 +107,7 @@ final class DoubaoAudioStateMonitor {
     }
 
     /// Synchronous pre-event snapshot. The Option event tap calls this before
-    /// the key event reaches Doubao, so the returned value is the old state
+    /// the key event reaches WeType, so the returned value is the old state
     /// that the Option press is about to toggle.
     func snapshotNow() -> Snapshot {
         refreshBindingIfNeeded()

@@ -6,7 +6,6 @@ import CoreGraphics
 import SwiftUI
 
 enum PermissionKind: String, Identifiable, CaseIterable {
-    case doubaoInput
     case microphone
     case accessibility
     case inputMonitoring
@@ -16,7 +15,6 @@ enum PermissionKind: String, Identifiable, CaseIterable {
 
     var title: String {
         switch self {
-        case .doubaoInput: L10n.text("豆包麦克风设置", "Doubao Microphone Setup")
         case .microphone: L10n.text("麦克风权限", "Microphone Permission")
         case .accessibility: L10n.text("辅助功能权限", "Accessibility Permission")
         case .inputMonitoring: L10n.text("输入监控权限", "Input Monitoring Permission")
@@ -27,7 +25,6 @@ enum PermissionKind: String, Identifiable, CaseIterable {
     var settingsURL: URL? {
         let anchor: String
         switch self {
-        case .doubaoInput: return nil
         case .microphone: anchor = "Privacy_Microphone"
         case .accessibility: anchor = "Privacy_Accessibility"
         case .inputMonitoring: anchor = "Privacy_ListenEvent"
@@ -40,14 +37,6 @@ enum PermissionKind: String, Identifiable, CaseIterable {
 
     var screenshotNames: [String] {
         switch self {
-        case .doubaoInput:
-            [
-                "permission-app-management",
-                "doubaoinput0",
-                "doubaoinput1",
-                "doubaoinput2",
-                "doubaoinput3"
-            ]
         case .microphone: ["permission-microphone", "permission-microphone"]
         case .accessibility: ["permission-accessibility", "permission-accessibility"]
         case .inputMonitoring: ["permission-input-monitoring", "permission-input-monitoring"]
@@ -57,29 +46,6 @@ enum PermissionKind: String, Identifiable, CaseIterable {
 
     var guidance: [String] {
         switch self {
-        case .doubaoInput:
-            return [
-                L10n.text(
-                    "首次直接打开豆包设置时，macOS 可能询问“App 管理”；请允许 vRemote 启动豆包输入法的设置组件。",
-                    "The first direct launch may ask for App Management. Allow vRemote to open Doubao's settings component."
-                ),
-                L10n.text(
-                    "打开菜单栏输入法菜单，点击“豆包输入法设置”。",
-                    "Open the input menu in the menu bar and choose Doubao Input Method Settings."
-                ),
-                L10n.text(
-                    "进入“语音输入”，找到“麦克风选择”，点击当前选项。",
-                    "Open Voice Input, locate Microphone Selection, and click the current option."
-                ),
-                L10n.text(
-                    "选择“自动检测”或“vRemoteDr 2ch”。如果自动检测没有声音，请直接选择 vRemoteDr 2ch。",
-                    "Choose Automatic Detection or vRemoteDr 2ch. If automatic detection is silent, select vRemoteDr 2ch directly."
-                ),
-                L10n.text(
-                    "请将豆包输入法做如图设置。如要更改为其他按键，请在 vRemoter 程序里也做对应修改。",
-                    "Set up the Doubao input method exactly as shown. If you change the trigger key, update it inside vRemoter to match."
-                )
-            ]
         case .microphone:
             return [
                 L10n.text(
@@ -246,7 +212,7 @@ private final class ConsoleViewModel: ObservableObject {
     @Published var secondInputDeviceUID = ""
     @Published var secondInputDeviceName = ""
     @Published var secondInputCapturing = false
-    @Published var voiceHost = AppStorage.voiceInputHost
+    @Published var voiceHost = VoiceInputHost.weType
     @Published var voiceIsRecording = false
     @Published var voiceInput = "--"
     @Published var voiceInputWarning: String?
@@ -271,20 +237,9 @@ private final class ConsoleViewModel: ObservableObject {
     var onRemoteInputEnabledChanged: ((Bool) -> Void)?
     var onSecondInputDeviceChanged: ((String) -> Void)?
     var onInputTriggerChanged: (() -> Void)?
-    var onVoiceInputHostChanged: ((VoiceInputHost) -> Void)?
     var onRemoteMappingEnabledChanged: ((SupportedRemoteID, Bool) -> Void)?
 
     var voiceUsesVRemote: Bool { voiceInput.contains("vRemoteDr 2ch") }
-
-    func setVoiceInputHost(_ host: VoiceInputHost) {
-        guard voiceHost != host else { return }
-        voiceHost = host
-        AppStorage.voiceInputHost = host
-        if inputTriggerKey != host.defaultTrigger {
-            setInputTrigger(host.defaultTrigger)
-        }
-        onVoiceInputHostChanged?(host)
-    }
 
     func setInputTrigger(_ trigger: InputTriggerKey) {
         guard inputTriggerKey != trigger else { return }
@@ -335,29 +290,9 @@ private final class ConsoleViewModel: ObservableObject {
     }
 
     func openSettings(for kind: PermissionKind) {
-        if kind == .doubaoInput {
-            openDoubaoSettings()
-            activeModal = nil
-            return
-        }
         guard let url = kind.settingsURL else { return }
         NSWorkspace.shared.open(url)
         activeModal = nil
-    }
-
-    private func openDoubaoSettings() {
-        let bundleIdentifier = "com.bytedance.inputmethod.doubaoime.settings"
-        let candidates = [
-            NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleIdentifier),
-            URL(
-                fileURLWithPath:
-                    "/Library/Input Methods/DoubaoIme.app/Contents/DoubaoImeSettings.app"
-            )
-        ]
-        for candidate in candidates.compactMap({ $0 })
-            where FileManager.default.fileExists(atPath: candidate.path) {
-            if NSWorkspace.shared.open(candidate) { return }
-        }
     }
 
     func openSoundInputSettings() {
@@ -388,7 +323,6 @@ final class DebugWindowController: NSWindowController, NSWindowDelegate {
     var onRemoteInputEnabledChanged: ((Bool) -> Void)?
     var onSecondInputDeviceChanged: ((String) -> Void)?
     var onInputTriggerChanged: (() -> Void)?
-    var onVoiceInputHostChanged: ((VoiceInputHost) -> Void)?
     var onRemoteMappingEnabledChanged: ((SupportedRemoteID, Bool) -> Void)?
 
     private let model = ConsoleViewModel()
@@ -433,9 +367,6 @@ final class DebugWindowController: NSWindowController, NSWindowDelegate {
         }
         model.onInputTriggerChanged = { [weak self] in
             self?.onInputTriggerChanged?()
-        }
-        model.onVoiceInputHostChanged = { [weak self] host in
-            self?.onVoiceInputHostChanged?(host)
         }
         model.onRemoteMappingEnabledChanged = { [weak self] remote, enabled in
             self?.onRemoteMappingEnabledChanged?(remote, enabled)
@@ -683,8 +614,8 @@ private struct StudioMixerView: View {
                 title: model.voiceHost.title,
                 value: voiceStatusValue,
                 tone: voiceStatusTone,
-                action: voiceStatusAction,
-                onAction: { model.activeModal = .permission(.doubaoInput) }
+                action: nil,
+                onAction: {}
             )
             StatusRow(
                 title: L10n.text("音频驱动", "Audio driver"),
@@ -787,12 +718,6 @@ private struct StudioMixerView: View {
         return .good
     }
 
-    private var voiceStatusAction: String? {
-        guard model.voiceHost == .doubao,
-              model.voiceIsRecording,
-              !model.voiceUsesVRemote else { return nil }
-        return L10n.text("设置方法", "Fix settings")
-    }
 }
 
 private struct ConsolePageSelector: View {
@@ -859,25 +784,6 @@ private struct KeyMappingView: View {
                         .font(.system(size: 17, weight: .semibold))
                         .foregroundStyle(ConsoleTheme.text)
                 }
-                HStack(spacing: 8) {
-                    Text(L10n.text("语音输入工具", "Voice input"))
-                        .font(.system(size: 11, weight: .medium))
-                        .foregroundStyle(ConsoleTheme.secondary)
-                    Picker(
-                        L10n.text("语音输入工具", "Voice input"),
-                        selection: Binding(
-                            get: { model.voiceHost },
-                            set: model.setVoiceInputHost
-                        )
-                    ) {
-                        ForEach(VoiceInputHost.allCases) { host in
-                            Text(host.title).tag(host)
-                        }
-                    }
-                    .labelsHidden()
-                    .frame(width: 132)
-                    .disabled(model.remoteStreaming)
-                }
                 Text(voiceTriggerDescription)
                     .font(.system(size: 12))
                     .foregroundStyle(ConsoleTheme.secondary)
@@ -924,18 +830,10 @@ private struct KeyMappingView: View {
     }
 
     private var voiceTriggerDescription: String {
-        switch model.voiceHost {
-        case .doubao:
-            L10n.text(
-                "遥控器语音键与电脑键盘都使用这个按键控制豆包。必须与豆包输入法中的语音快捷键一致。键盘触发左右都识别，遥控器按所选侧合成。",
-                "The remote voice key and Mac keyboard both use this trigger. It must match Doubao Input Method's voice shortcut. The keyboard accepts either side; the remote synthesizes the selected side."
-            )
-        case .weType:
-            L10n.text(
-                "遥控器按住说话、松手结束。微信输入法「按住说话」默认是右 Option，请与这里保持一致；麦克风请在微信输入法 → 语音输入 → 麦克风里选择 vRemoteDr 2ch。键盘触发左右都识别，遥控器按所选侧合成。",
-                "Hold the remote to talk and release to stop. WeType uses right Option for push-to-talk by default; keep this trigger in sync. Choose vRemoteDr 2ch in WeType → Voice Input → Microphone. The keyboard accepts either side; the remote synthesizes the selected side."
-            )
-        }
+        L10n.text(
+            "遥控器按住说话、松手结束。微信输入法「按住说话」默认是右 Option，请与这里保持一致；麦克风请在微信输入法 → 语音输入 → 麦克风里选择 vRemoteDr 2ch。键盘触发左右都识别，遥控器按所选侧合成。",
+            "Hold the remote to talk and release to stop. WeType uses right Option for push-to-talk by default; keep this trigger in sync. Choose vRemoteDr 2ch in WeType → Voice Input → Microphone. The keyboard accepts either side; the remote synthesizes the selected side."
+        )
     }
 
     private var devicePanel: some View {
@@ -1123,7 +1021,7 @@ private struct MappingRow: View {
                     .font(.system(size: 11))
                     .foregroundStyle(ConsoleTheme.tertiary)
             } else if button.voiceControlled {
-                Text(AppStorage.voiceInputHost.voiceActionTitle)
+                Text(VoiceInputHost.weType.voiceActionTitle)
                     .font(.system(size: 11))
                     .foregroundStyle(ConsoleTheme.green)
             } else {
@@ -1141,7 +1039,7 @@ private struct MappingRow: View {
                             }
                         )
                     ) {
-                        ForEach(RemoteMappingTarget.allCases.filter { $0 != .doubaoVoice }) { target in
+                        ForEach(RemoteMappingTarget.allCases.filter { $0 != .weTypeVoice }) { target in
                             Text(target == .custom
                                 ? customMenuTitle
                                 : target.title
@@ -1519,7 +1417,7 @@ private struct OutputChannelView: View {
             Text(L10n.text("混合输出", "Mixed Output"))
                 .font(.system(size: 20, weight: .semibold))
                 .foregroundStyle(ConsoleTheme.text)
-            Text(L10n.text("发送给豆包", "Sent to Doubao"))
+            Text(L10n.text("发送给微信输入法", "Sent to WeType"))
                 .font(.system(size: 13))
                 .foregroundStyle(ConsoleTheme.secondary)
                 .padding(.top, 4)
@@ -1577,7 +1475,7 @@ private struct OutputChannelView: View {
             .padding(.top, 25)
             Text(outputError
                 ? L10n.text("等待音频链路恢复", "Waiting for audio route")
-                : L10n.text("豆包正在接收", "Doubao is receiving"))
+                : L10n.text("微信输入法正在接收", "WeType is receiving"))
                 .font(.system(size: 11))
                 .foregroundStyle(outputError ? ConsoleTheme.red : ConsoleTheme.secondary)
                 .padding(.top, 15)
@@ -1773,18 +1671,16 @@ private struct GuideScreenshot: View {
                     screenshotPlaceholder
                 }
 
-                if kind != .doubaoInput || page == 0 {
-                    RoundedRectangle(cornerRadius: 10)
-                        .stroke(ConsoleTheme.red, lineWidth: 3)
-                        .frame(
-                            width: proxy.size.width * highlightWidth,
-                            height: proxy.size.height * highlightHeight
-                        )
-                        .position(
-                            x: proxy.size.width * highlightX,
-                            y: proxy.size.height * highlightY
-                        )
-                }
+                RoundedRectangle(cornerRadius: 10)
+                    .stroke(ConsoleTheme.red, lineWidth: 3)
+                    .frame(
+                        width: proxy.size.width * highlightWidth,
+                        height: proxy.size.height * highlightHeight
+                    )
+                    .position(
+                        x: proxy.size.width * highlightX,
+                        y: proxy.size.height * highlightY
+                    )
 
                 HStack {
                     guideArrow(systemName: "chevron.left", enabled: page > 0) {
@@ -1843,7 +1739,6 @@ private struct GuideScreenshot: View {
 
     private var secondPageY: CGFloat {
         switch kind {
-        case .doubaoInput: 0.5
         case .microphone: 0.92
         case .accessibility: 0.89
         case .inputMonitoring: 0.46
@@ -1852,19 +1747,19 @@ private struct GuideScreenshot: View {
     }
 
     private var highlightWidth: CGFloat {
-        kind == .doubaoInput ? 0.36 : (page == 0 ? 0.38 : 0.45)
+        (page == 0 ? 0.38 : 0.45)
     }
 
     private var highlightHeight: CGFloat {
-        kind == .doubaoInput ? 0.11 : 0.10
+        0.10
     }
 
     private var highlightX: CGFloat {
-        kind == .doubaoInput ? 0.60 : (page == 0 ? 0.255 : 0.62)
+        (page == 0 ? 0.255 : 0.62)
     }
 
     private var highlightY: CGFloat {
-        kind == .doubaoInput ? 0.40 : (page == 0 ? 0.25 : secondPageY)
+        (page == 0 ? 0.25 : secondPageY)
     }
 
     private func guideArrow(

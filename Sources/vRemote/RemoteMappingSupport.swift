@@ -58,7 +58,7 @@ enum RemoteProfiles {
         .init(id: "0B", title: L10n.text("返回", "Back"), symbol: "chevron.backward", defaultTarget: .escape),
         .init(id: "0A", title: "Home", symbol: "house", defaultTarget: .showDesktop),
         .init(id: "0E", title: "YouTube", symbol: "play.rectangle", defaultTarget: .disabled),
-        .init(id: "voice", title: L10n.text("语音", "Voice"), symbol: "mic", defaultTarget: .doubaoVoice, voiceControlled: true),
+        .init(id: "voice", title: L10n.text("语音", "Voice"), symbol: "mic", defaultTarget: .weTypeVoice, voiceControlled: true),
         .init(id: "08", title: L10n.text("静音", "Mute"), symbol: "speaker.slash", defaultTarget: .mute),
         .init(id: "0F", title: "Netflix", symbol: "n.square", defaultTarget: .disabled),
         .init(id: "01", title: L10n.text("电源", "Power"), symbol: "power", defaultTarget: .disabled),
@@ -88,7 +88,7 @@ enum RemoteProfiles {
         .init(id: "k28", title: "OK", symbol: "circle.inset.filled", defaultTarget: .returnKey),
         .init(id: "k4B", title: "PG+", symbol: "arrow.up.to.line", defaultTarget: .pageUp),
         .init(id: "k4E", title: "PG−", symbol: "arrow.down.to.line", defaultTarget: .pageDown),
-        .init(id: "voice", title: L10n.text("语音", "Voice"), symbol: "mic", defaultTarget: .doubaoVoice, voiceControlled: true),
+        .init(id: "voice", title: L10n.text("语音", "Voice"), symbol: "mic", defaultTarget: .weTypeVoice, voiceControlled: true),
         .init(id: "cE9", title: L10n.text("音量＋", "Volume Up"), symbol: "speaker.plus", defaultTarget: .volumeUp),
         .init(id: "cEA", title: L10n.text("音量－", "Volume Down"), symbol: "speaker.minus", defaultTarget: .volumeDown),
         .init(id: "s01", title: L10n.text("电源", "Power"), symbol: "power", defaultTarget: .disabled),
@@ -97,7 +97,7 @@ enum RemoteProfiles {
 
 enum RemoteMappingTarget: String, CaseIterable, Identifiable, Codable, Hashable {
     case disabled
-    case doubaoVoice
+    case weTypeVoice
     case arrowUp
     case arrowDown
     case arrowLeft
@@ -132,7 +132,7 @@ enum RemoteMappingTarget: String, CaseIterable, Identifiable, Codable, Hashable 
     var title: String {
         switch self {
         case .disabled: L10n.text("禁用", "Disabled")
-        case .doubaoVoice: L10n.text("豆包语音输入", "Doubao Voice Input")
+        case .weTypeVoice: L10n.text("微信输入法语音", "WeType Voice")
         case .arrowUp: L10n.text("方向上", "Up Arrow")
         case .arrowDown: L10n.text("方向下", "Down Arrow")
         case .arrowLeft: L10n.text("方向左", "Left Arrow")
@@ -215,7 +215,7 @@ enum RemoteMappingTarget: String, CaseIterable, Identifiable, Codable, Hashable 
     }
 
     func post(isDown: Bool) {
-        guard self != .disabled, self != .doubaoVoice else { return }
+        guard self != .disabled, self != .weTypeVoice else { return }
         switch self {
         case .sleep:
             // 睡眠：无可靠组合键，走 System Events（首次触发 macOS TCC 授权）。
@@ -555,7 +555,7 @@ final class RemoteMappingStore: ObservableObject {
         for button: RemoteButtonDefinition,
         remote: SupportedRemoteID
     ) -> RemoteMappingTarget {
-        guard !button.voiceControlled else { return .doubaoVoice }
+        guard !button.voiceControlled else { return .weTypeVoice }
         guard button.remappable else { return .disabled }
         let key = prefix + remote.rawValue + "." + button.id
         guard let raw = defaults.string(forKey: key),

@@ -1,7 +1,7 @@
 // vRemote for macOS.
 //
 // 1. Supported remote voice key → matching Option toggle semantics
-// 2. Remote ATVV + Mac microphone → aligned mix → vRemoteDr 2ch → Doubao
+// 2. Remote ATVV + Mac microphone → aligned mix → vRemoteDr 2ch → WeType
 // 3. A physical Mac Option key controls the same remote microphone session
 //
 // macOS-only. Requires:
@@ -10,7 +10,7 @@
 //     Accessibility) for Option observation and Search suppression
 //   * vRemoteDriver.driver installed and visible as vRemoteDr 2ch in
 //     System Settings → Sound → Input/Output
-//   * Doubao IME configured for Option-as-voice-mode trigger
+//   * WeType configured for Option-as-voice-mode trigger
 //
 // Run:   swift run
 // Quit:  menu bar icon → 退出, or Ctrl+C
@@ -45,9 +45,9 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private let x6 = X6HIDBridge()
     private let chromecastHID = ChromecastRemoteHIDBridge()
     private let x6SearchSuppressor = X6SearchSuppressor()
-    private let voiceInputState = DoubaoAudioStateMonitor()
+    private let voiceInputState = VoiceInputStateMonitor()
     private lazy var x6Session = X6SessionCoordinator(
-        doubaoState: voiceInputState
+        voiceState: voiceInputState
     )
     private let debugWindow = DebugWindowController()
     private let updateWindow = UpdateWindowController()
@@ -69,8 +69,8 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         AppStorage.prepare()
         NSApp.setActivationPolicy(.accessory)
-        voiceInputState.setHost(AppStorage.voiceInputHost)
-        x6Session.voiceHost = AppStorage.voiceInputHost
+        voiceInputState.setHost(VoiceInputHost.weType)
+        x6Session.voiceHost = VoiceInputHost.weType
         AppAnalytics.configure()
         // Keep one continuous diagnostic history while X6 is being tuned.
         // Log.swift rotates at 5 MB; only the explicit menu action clears it.
@@ -478,7 +478,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private func updateStatus() {
         let anyHID = x6HIDConnected || chromecastHIDConnected
         let anyBLE = x6BLEConnected || chromecastBLEConnected
-        let host = AppStorage.voiceInputHost
+        let host = VoiceInputHost.weType
         let voiceSnapshot = voiceInputState.snapshotNow()
         let voiceUsesVRemote = voiceSnapshot.inputDeviceNames.contains("vRemoteDr 2ch")
         let statusText: String
@@ -528,7 +528,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     private func voiceInputWarning(
         host: VoiceInputHost,
-        snapshot: DoubaoAudioStateMonitor.Snapshot
+        snapshot: VoiceInputStateMonitor.Snapshot
     ) -> String? {
         guard host == .weType else { return nil }
         if snapshot.state == .unavailable {
@@ -577,7 +577,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 self?.x6BLE.closeMicrophone(force: true)
                 self?.chromecastBLE.closeMicrophone(force: true)
                 self?.debugWindow.updateRemoteLevel(-120)
-            } else if AppStorage.voiceInputHost.canObserveRecording,
+            } else if VoiceInputHost.weType.canObserveRecording,
                       self?.voiceInputState.snapshotNow().isRecording == true {
                 self?.openPreferredRemoteMicrophone()
             }
@@ -585,14 +585,6 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         debugWindow.onInputTriggerChanged = { [weak self] in
             self?.x6SearchSuppressor.triggerConfigurationDidChange()
-        }
-        debugWindow.onVoiceInputHostChanged = { [weak self] host in
-            guard let self else { return }
-            print("[APP] 语音输入工具 → \(host.title)")
-            self.x6Session.forceClose()
-            self.x6Session.voiceHost = host
-            self.voiceInputState.setHost(host)
-            self.updateStatus()
         }
         debugWindow.onRemoteMappingEnabledChanged = { [weak self] remote, enabled in
             switch remote {
