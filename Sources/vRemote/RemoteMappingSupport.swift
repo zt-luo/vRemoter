@@ -113,6 +113,8 @@ enum RemoteMappingTarget: String, CaseIterable, Identifiable, Codable, Hashable 
     case pageDown
     case volumeUp
     case volumeDown
+    case scrollUp
+    case scrollDown
     case mute
     case playPause
     case showDesktop
@@ -146,6 +148,8 @@ enum RemoteMappingTarget: String, CaseIterable, Identifiable, Codable, Hashable 
         case .pageDown: "Page Down"
         case .volumeUp: L10n.text("系统音量＋", "System Volume Up")
         case .volumeDown: L10n.text("系统音量－", "System Volume Down")
+        case .scrollUp: L10n.text("向上滚动", "Scroll Up")
+        case .scrollDown: L10n.text("向下滚动", "Scroll Down")
         case .mute: L10n.text("系统静音", "System Mute")
         case .playPause: L10n.text("播放/暂停", "Play / Pause")
         case .showDesktop: L10n.text("显示桌面", "Show Desktop")
@@ -197,6 +201,19 @@ enum RemoteMappingTarget: String, CaseIterable, Identifiable, Codable, Hashable 
         }
     }
 
+    /// Targets that should keep sending key-down events while the remote key
+    /// is held. Absolute/toggle/session actions stay one-shot.
+    var isRepeatable: Bool {
+        switch self {
+        case .deleteBackward,
+             .arrowUp, .arrowDown, .arrowLeft, .arrowRight,
+             .pageUp, .pageDown:
+            true
+        default:
+            false
+        }
+    }
+
     func post(isDown: Bool) {
         guard self != .disabled, self != .doubaoVoice else { return }
         switch self {
@@ -207,6 +224,18 @@ enum RemoteMappingTarget: String, CaseIterable, Identifiable, Codable, Hashable 
         case .appSwitcher:
             // 切换应用：按下=开启/延续会话（⌘ 虚拟按住），松手无动作，由 1s 倒计时收尾。
             if isDown { AppSwitcherSession.shared.tapSwitcher() }
+        case .scrollUp:
+            if isDown {
+                ScrollRepeatSession.shared.begin(direction: .up)
+            } else {
+                ScrollRepeatSession.shared.end()
+            }
+        case .scrollDown:
+            if isDown {
+                ScrollRepeatSession.shared.begin(direction: .down)
+            } else {
+                ScrollRepeatSession.shared.end()
+            }
         default:
             if let keyboard {
                 let source = CGEventSource(stateID: .hidSystemState)
@@ -340,6 +369,154 @@ final class AppSwitcherSession {
     }
 }
 
+/// 音量键映射成滚轮时的按住连发会话。普通滚轮单位（3 行），不模拟触控板手势。
+final class ScrollRepeatSession {
+    static let shared = ScrollRepeatSession()
+
+    enum Direction {
+        case up
+        case down
+    }
+
+    private static let step: Int32 = 3
+    private static let interval: TimeInterval = 0.08
+
+    private var pending: DispatchWorkItem?
+    private var direction: Direction?
+
+    func begin(direction: Direction) {
+        onMain { $0.beginOnMain(direction) }
+    }
+
+    func end() {
+        onMain { $0.endOnMain() }
+    }
+
+    private func beginOnMain(_ direction: Direction) {
+        if self.direction == direction, pending != nil { return }
+        endOnMain()
+        self.direction = direction
+        print("[SCROLL] begin \(direction == .up ? "up" : "down")")
+        postScroll(direction)
+        schedule()
+    }
+
+    private func endOnMain() {
+        if direction != nil {
+            print("[SCROLL] end")
+        }
+        pending?.cancel()
+        pending = nil
+        direction = nil
+    }
+
+    private func schedule() {
+        let item = DispatchWorkItem { [weak self] in
+            guard let self, let direction = self.direction else { return }
+            self.postScroll(direction)
+            self.schedule()
+        }
+        pending = item
+        DispatchQueue.main.asyncAfter(
+            deadline: .now() + Self.interval,
+            execute: item
+        )
+    }
+
+    private func postScroll(_ direction: Direction) {
+        // macOS 上正 wheel1 表示内容向下、视图向下；这里让「向上滚动」
+        // 真正把内容往上推，因此符号与直觉相反。
+        let wheel1: Int32 = direction == .up ? -Self.step : Self.step
+        let source = CGEventSource(stateID: .hidSystemState)
+        guard let event = CGEvent(
+            scrollWheelEvent2Source: source,
+            units: .line,
+            wheelCount: 1,
+            wheel1: wheel1,
+            wheel2: 0,
+            wheel3: 0
+        ) else {
+            print("[SCROLL] ⚠️ event creation failed")
+            return
+        }
+        print("[SCROLL] post wheel1=\(wheel1)")
+        event.post(tap: .cghidEventTap)
+    }
+
+    private func onMain(_ body: @escaping (ScrollRepeatSession) -> Void) {
+        if Thread.isMainThread {
+            body(self)
+        } else {
+            DispatchQueue.main.async { [weak self] in
+                guard let self else { return }
+                body(self)
+            }
+        }
+    }
+}
+
+/// 可连发按键（退格、方向键、翻页）的按住连发会话。
+/// 按下先发一次 keyDown，0.35 秒后每 0.06 秒重复 keyDown，松手发 keyUp。
+final class KeyRepeatSession {
+    static let shared = KeyRepeatSession()
+
+    private static let initialDelay: TimeInterval = 0.35
+    private static let interval: TimeInterval = 0.06
+
+    private var target: RemoteMappingTarget?
+    private var pending: DispatchWorkItem?
+
+    func begin(_ target: RemoteMappingTarget) {
+        onMain { $0.beginOnMain(target) }
+    }
+
+    func end(_ target: RemoteMappingTarget? = nil) {
+        onMain { $0.endOnMain(target) }
+    }
+
+    private func beginOnMain(_ target: RemoteMappingTarget) {
+        if self.target == target, pending != nil { return }
+        endOnMain(nil)
+        self.target = target
+        target.post(isDown: true)
+        schedule(after: Self.initialDelay)
+    }
+
+    private func endOnMain(_ target: RemoteMappingTarget?) {
+        if let target, self.target != target { return }
+        pending?.cancel()
+        pending = nil
+        if let active = self.target {
+            active.post(isDown: false)
+        }
+        self.target = nil
+    }
+
+    private func schedule(after delay: TimeInterval) {
+        let item = DispatchWorkItem { [weak self] in
+            guard let self, let target = self.target else { return }
+            target.post(isDown: true)
+            self.schedule(after: Self.interval)
+        }
+        pending = item
+        DispatchQueue.main.asyncAfter(
+            deadline: .now() + delay,
+            execute: item
+        )
+    }
+
+    private func onMain(_ body: @escaping (KeyRepeatSession) -> Void) {
+        if Thread.isMainThread {
+            body(self)
+        } else {
+            DispatchQueue.main.async { [weak self] in
+                guard let self else { return }
+                body(self)
+            }
+        }
+    }
+}
+
 enum AppSwitcherSupport {
     /// 睡眠：无可靠系统组合键（pmset/IOKit 均需 root），走 System Events。
     /// 首次触发时 macOS 会弹一次 TCC 授权（vRemote → System Events）。
@@ -367,6 +544,9 @@ final class RemoteMappingStore: ObservableObject {
     }
 
     func setEnabled(_ enabled: Bool, for remote: SupportedRemoteID) {
+        if !enabled {
+            KeyRepeatSession.shared.end()
+        }
         defaults.set(enabled, forKey: enabledPrefix + remote.rawValue)
         revision += 1
     }
@@ -390,6 +570,7 @@ final class RemoteMappingStore: ObservableObject {
         remote: SupportedRemoteID
     ) {
         guard !button.voiceControlled, button.remappable else { return }
+        KeyRepeatSession.shared.end()
         defaults.set(
             target.rawValue,
             forKey: prefix + remote.rawValue + "." + button.id
@@ -446,12 +627,21 @@ final class RemoteMappingStore: ObservableObject {
         }
         if value == .custom {
             customShortcut(for: button, remote: remote)?.post(isDown: isDown)
-        } else {
-            value.post(isDown: isDown)
+            return
         }
+        if value.isRepeatable {
+            if isDown {
+                KeyRepeatSession.shared.begin(value)
+            } else {
+                KeyRepeatSession.shared.end(value)
+            }
+            return
+        }
+        value.post(isDown: isDown)
     }
 
     func reset(_ remote: SupportedRemoteID) {
+        KeyRepeatSession.shared.end()
         for button in RemoteProfiles.buttons(for: remote) {
             defaults.removeObject(
                 forKey: prefix + remote.rawValue + "." + button.id

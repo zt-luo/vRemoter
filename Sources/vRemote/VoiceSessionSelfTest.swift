@@ -133,6 +133,7 @@ enum VoiceSessionSelfTest {
         testChromecastReasonZeroWhileClosedIsIgnored(checks)
         testIndependentRemoteStops(checks)
         testDebouncedRetry(checks)
+        testRepeatableTargets(checks)
         emit("[SELF-TEST] completed failures=\(checks.failures)")
         return checks.failures == 0
     }
@@ -278,6 +279,30 @@ enum VoiceSessionSelfTest {
             h.coordinator.debugSnapshot.openRequestedRemote == .chromecast,
             "only the sent retry becomes pending"
         )
+    }
+
+    private static func testRepeatableTargets(_ c: CheckContext) {
+        for target in [
+            RemoteMappingTarget.deleteBackward,
+            .arrowUp, .arrowDown, .arrowLeft, .arrowRight,
+            .pageUp, .pageDown,
+        ] {
+            c.expect(target.isRepeatable, "\(target.rawValue) repeats while held")
+        }
+        for target in [
+            RemoteMappingTarget.returnKey,
+            .escape,
+            .home,
+            .end,
+            .volumeUp,
+            .volumeDown,
+            .mute,
+            .playPause,
+            .showDesktop,
+            .appSwitcher,
+        ] {
+            c.expect(!target.isRepeatable, "\(target.rawValue) is one-shot")
+        }
     }
 }
 #endif

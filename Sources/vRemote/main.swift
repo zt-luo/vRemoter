@@ -740,6 +740,8 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         AudioPipe.shared.stop()
         // 切换器会话若还挂着 ⌘ 虚按住状态，退出时收尾。
         AppSwitcherSession.shared.cancel()
+        ScrollRepeatSession.shared.end()
+        KeyRepeatSession.shared.end()
     }
 }
 
