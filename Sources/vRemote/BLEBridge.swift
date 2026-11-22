@@ -107,6 +107,9 @@ final class BLEBridge: NSObject {
 
     func stop() {
         isStarted = false
+        connectTimeout?.cancel()
+        connectTimeout = nil
+        central.stopScan()
         closeTimeoutWorkItem?.cancel()
         closeTimeoutWorkItem = nil
         stopKeepAliveTimer()
@@ -220,6 +223,7 @@ final class BLEBridge: NSObject {
     /// the peripheral directly. This works even when the device is HID-paired
     /// (advertisement scan returns nothing in that case).
     private func tryDirectConnect() {
+        guard isStarted else { return }
         // Prefer the currently connected physical device over a persisted
         // UUID. This makes same-model replacement remotes work without
         // manually deleting the saved UUID file from the previous unit.
@@ -258,6 +262,7 @@ final class BLEBridge: NSObject {
     }
 
     private func beginScan() {
+        guard isStarted else { return }
         print("[\(logTag)] 扫描中（按名字 \(nameHint ?? "?") + ATVV service 过滤）")
         central.scanForPeripherals(
             withServices: nil,
@@ -280,7 +285,7 @@ final class BLEBridge: NSObject {
         to p: CBPeripheral,
         allowTimeoutFallback: Bool = false
     ) {
-        guard matches(p) else { return }
+        guard isStarted, matches(p) else { return }
         connectTimeout?.cancel()
         peripheral = p
         connectedPeripheralID = nil
@@ -454,7 +459,9 @@ extension BLEBridge: CBCentralManagerDelegate {
         connectedPeripheralID = nil
         print("[\(logTag)] 连接失败: \(error?.localizedDescription ?? "unknown")")
         onConnectionChanged?(false)
-        beginScan()
+        if isStarted {
+            beginScan()
+        }
     }
 
     func centralManager(_ central: CBCentralManager,
@@ -468,8 +475,10 @@ extension BLEBridge: CBCentralManagerDelegate {
         print("[\(logTag)] 断开: \(error?.localizedDescription ?? "ok")")
         onConnectionChanged?(false)
         finishAudioStreamLocally(reason: 0xFC)
+        guard isStarted else { return }
         DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak self] in
-            self?.beginScan()
+            guard let self, self.isStarted else { return }
+            self.beginScan()
         }
     }
 }

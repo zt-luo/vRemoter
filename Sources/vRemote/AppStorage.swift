@@ -5,6 +5,7 @@ enum AppStorage {
     static let recordingEnabledKey = "recordingEnabled"
     static let macInputEnabledKey = "macInputEnabled"
     static let remoteInputEnabledKey = "remoteInputEnabled"
+    static let remoteConnectionEnabledKey = "remoteConnectionEnabled"
     static let secondInputDeviceUIDKey = "secondInputDeviceUID"
     static let voiceInputSelectedAppKey = "voiceInput.selectedApp"
     static let voiceInputDetectedModeKey = "voiceInput.detectedMode"
@@ -35,6 +36,7 @@ enum AppStorage {
             recordingEnabledKey: false,
             macInputEnabledKey: true,
             remoteInputEnabledKey: true,
+            remoteConnectionEnabledKey: true,
             voiceInputSelectedAppKey: VoiceInputAppCatalog.weType.id,
             voiceInputDetectedModeKey: "",
             secondInputDeviceUIDKey: "",
@@ -64,6 +66,18 @@ enum AppStorage {
     static var remoteInputEnabled: Bool {
         get { UserDefaults.standard.bool(forKey: remoteInputEnabledKey) }
         set { UserDefaults.standard.set(newValue, forKey: remoteInputEnabledKey) }
+    }
+
+    /// Whether vRemoter keeps its own BLE/HID connection to the remote alive.
+    /// Disabling it saves the remote's battery; the setting is persistent.
+    static var remoteConnectionEnabled: Bool {
+        get { UserDefaults.standard.bool(forKey: remoteConnectionEnabledKey) }
+        set {
+            UserDefaults.standard.set(
+                newValue,
+                forKey: remoteConnectionEnabledKey
+            )
+        }
     }
 
     static var selectedVoiceInputAppID: String {

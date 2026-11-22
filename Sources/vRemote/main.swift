@@ -25,6 +25,7 @@ import Foundation
 final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var statusItem: NSStatusItem!
     private var headerLabel: NSMenuItem!
+    private var remoteConnectionItem: NSMenuItem!
     private var launchAtLoginItem: NSMenuItem!
     private var loggingToggleItem: NSMenuItem!
     private var logSizeItem: NSMenuItem!
@@ -88,6 +89,18 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         header.isEnabled = false
         menu.addItem(header)
         headerLabel = header
+
+        let remoteConnection = NSMenuItem(
+            title: L10n.text(
+                "启用遥控器连接",
+                "Enable remote connection"
+            ),
+            action: #selector(toggleRemoteConnection),
+            keyEquivalent: ""
+        )
+        remoteConnection.target = self
+        menu.addItem(remoteConnection)
+        remoteConnectionItem = remoteConnection
 
         let launch = NSMenuItem(
             title: L10n.text("登录时自动启动", "Launch at login"),
@@ -223,8 +236,12 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 isSynthetic: false
             )
         }
-        chromecastHID.start()
-        chromecastBLE.start()
+        if AppStorage.remoteConnectionEnabled {
+            chromecastHID.start()
+            chromecastBLE.start()
+        } else {
+            print("[APP] remote connection disabled at launch")
+        }
 
         // Start the loopback engine eagerly so device binding is verified
         // before the first BLE audio packet arrives.
@@ -421,7 +438,9 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let voiceSnapshot = voiceInputState.snapshotNow()
         let voiceUsesVRemote = voiceSnapshot.inputDeviceNames.contains("vRemoteDr 2ch")
         let statusText: String
-        if host.canObserveRecording,
+        if !AppStorage.remoteConnectionEnabled {
+            statusText = L10n.text("遥控器已停用", "Remote disabled")
+        } else if host.canObserveRecording,
            voiceSnapshot.isRecording,
            !voiceUsesVRemote {
             statusText = L10n.text(
@@ -643,6 +662,8 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     private func refreshMenuState() {
+        remoteConnectionItem?.state =
+            AppStorage.remoteConnectionEnabled ? .on : .off
         launchAtLoginItem?.state = LaunchAtLogin.isEnabled ? .on : .off
         loggingToggleItem?.state = Log.isEnabled ? .on : .off
         recordingToggleItem?.state = AppStorage.recordingEnabled ? .on : .off
@@ -657,6 +678,40 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         )
         recordingSizeItem?.title = L10n.text("占用", "Size")
             + " · \(AppStorage.formattedSize(recordingBytes))"
+    }
+
+    @objc private func toggleRemoteConnection() {
+        let enabled = !AppStorage.remoteConnectionEnabled
+        AppStorage.remoteConnectionEnabled = enabled
+        applyRemoteConnectionEnabled(enabled)
+        refreshMenuState()
+        updateStatus()
+    }
+
+    private func applyRemoteConnectionEnabled(_ enabled: Bool) {
+        print(
+            "[APP] remote connection " +
+            (enabled ? "enabled" : "disabled")
+        )
+        if enabled {
+            chromecastHID.start()
+            chromecastBLE.start()
+            return
+        }
+
+        voiceSession.forceClose()
+        chromecastBLE.closeMicrophone(force: true)
+        AudioPipe.shared.setRemoteActive(false)
+        chromecastBLE.stop()
+        chromecastHID.stop()
+
+        // stop() callbacks normally publish these, but reset them eagerly so
+        // the menu never shows a stale connection while the remote is off.
+        chromecastHIDConnected = false
+        chromecastBLEConnected = false
+        chromecastRemoteStreaming = false
+        refreshCombinedStreaming()
+        debugWindow.updateRemoteLevel(-120)
     }
 
     @objc private func toggleLaunchAtLogin() {
