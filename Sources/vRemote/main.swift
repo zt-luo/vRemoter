@@ -57,9 +57,10 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         AppStorage.prepare()
         NSApp.setActivationPolicy(.accessory)
-        voiceInputState.setHost(VoiceInputHost.weType)
-        voiceSession.voiceHost = VoiceInputHost.weType
-        voiceSession.triggerMode = AppStorage.weTypeTriggerMode
+        let voiceApp = AppStorage.selectedVoiceInputApp
+        voiceInputState.setApp(voiceApp)
+        voiceSession.voiceApp = voiceApp
+        voiceSession.triggerMode = AppStorage.detectedTriggerMode ?? .pushToTalk
         AppAnalytics.configure()
         // Keep one continuous diagnostic history.
         // Log.swift rotates at 5 MB; only the explicit menu action clears it.
@@ -206,6 +207,22 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         voiceSession.start()
         inputTriggerMonitor.start()
+        inputTriggerMonitor.configure(
+            ptt: AppStorage.pttShortcut,
+            toggle: AppStorage.toggleShortcut
+        )
+        inputTriggerMonitor.onTriggerDown = { [weak self] mode in
+            self?.voiceSession.triggerDownObserved(
+                mode: mode,
+                isSynthetic: false
+            )
+        }
+        inputTriggerMonitor.onTriggerUp = { [weak self] mode in
+            self?.voiceSession.triggerUpObserved(
+                mode: mode,
+                isSynthetic: false
+            )
+        }
         chromecastHID.start()
         chromecastBLE.start()
 
@@ -400,7 +417,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private func updateStatus() {
         let anyHID = chromecastHIDConnected
         let anyBLE = chromecastBLEConnected
-        let host = VoiceInputHost.weType
+        let host = AppStorage.selectedVoiceInputApp
         let voiceSnapshot = voiceInputState.snapshotNow()
         let voiceUsesVRemote = voiceSnapshot.inputDeviceNames.contains("vRemoteDr 2ch")
         let statusText: String
@@ -433,11 +450,10 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
             secondInputDeviceUID: AudioPipe.shared.secondInputDeviceUID,
             secondInputDeviceName: AudioPipe.shared.secondInputDeviceName,
             secondInputCapturing: AudioPipe.shared.isSecondInputCapturing,
-            voiceHost: host,
             voiceIsRecording: voiceSnapshot.isRecording,
             voiceInput: voiceSnapshot.deviceSummary,
             voiceInputWarning: voiceInputWarning(
-                host: host,
+                app: host,
                 snapshot: voiceSnapshot
             ),
             driverAvailable: AudioPipe.shared.isOutputDeviceAvailable,
@@ -448,10 +464,10 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     private func voiceInputWarning(
-        host: VoiceInputHost,
+        app: VoiceInputApp,
         snapshot: VoiceInputStateMonitor.Snapshot
     ) -> String? {
-        guard host == .weType else { return nil }
+        guard app.id == VoiceInputAppCatalog.weType.id else { return nil }
         if snapshot.state == .unavailable {
             return L10n.text("微信输入法未运行", "WeType is not running")
         }
@@ -497,7 +513,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
             if !enabled {
                 self?.chromecastBLE.closeMicrophone(force: true)
                 self?.debugWindow.updateRemoteLevel(-120)
-            } else if VoiceInputHost.weType.canObserveRecording,
+            } else if AppStorage.selectedVoiceInputApp.canObserveRecording,
                       self?.voiceInputState.snapshotNow().isRecording == true {
                 self?.openPreferredRemoteMicrophone()
             }
@@ -511,14 +527,25 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 isDown: isDown
             ) ?? false
         }
-        debugWindow.onInputTriggerChanged = { [weak self] in
-            self?.inputTriggerMonitor.triggerConfigurationDidChange()
+        debugWindow.onShortcutsChanged = { [weak self] in
+            guard let self else { return }
+            self.inputTriggerMonitor.configure(
+                ptt: AppStorage.pttShortcut,
+                toggle: AppStorage.toggleShortcut
+            )
+            self.updateStatus()
         }
-        debugWindow.onWeTypeTriggerModeChanged = { [weak self] mode in
+        debugWindow.onVoiceInputAppChanged = { [weak self] app in
             guard let self else { return }
             self.voiceSession.forceClose()
-            self.voiceSession.triggerMode = mode
-            self.inputTriggerMonitor.triggerConfigurationDidChange()
+            self.voiceSession.voiceApp = app
+            self.voiceInputState.setApp(app)
+            self.voiceSession.triggerMode =
+                AppStorage.detectedTriggerMode ?? .pushToTalk
+            self.inputTriggerMonitor.configure(
+                ptt: AppStorage.pttShortcut,
+                toggle: AppStorage.toggleShortcut
+            )
             self.updateStatus()
         }
         debugWindow.onRemoteMappingEnabledChanged = { [weak self] _, enabled in

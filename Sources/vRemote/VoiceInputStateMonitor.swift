@@ -33,7 +33,7 @@ final class VoiceInputStateMonitor {
 
     private static let targetDeviceName = "vRemoteDr 2ch"
 
-    private(set) var host: VoiceInputHost
+    private(set) var app: VoiceInputApp
     private var targetBundleID: String
 
     private var started = false
@@ -43,22 +43,22 @@ final class VoiceInputStateMonitor {
 
     var onSnapshotChanged: ((Snapshot) -> Void)?
 
-    init(host: VoiceInputHost = .weType) {
-        self.host = host
-        self.targetBundleID = host.bundleID
+    init(app: VoiceInputApp = VoiceInputAppCatalog.weType) {
+        self.app = app
+        self.targetBundleID = app.bundleID
     }
 
     /// Rebinds the monitor after the user changes the voice input tool.
-    func setHost(_ host: VoiceInputHost) {
-        guard host != self.host else { return }
-        self.host = host
-        targetBundleID = host.bundleID
+    func setApp(_ app: VoiceInputApp) {
+        guard app != self.app else { return }
+        self.app = app
+        targetBundleID = app.bundleID
         unbindProcessObject()
         lastSnapshot = nil
         refreshBindingAndPublish(force: true)
     }
 
-    private var logTag: String { "[\(host.logTag)]" }
+    private var logTag: String { "[\(app.logTag)]" }
 
     private lazy var processListListener: AudioObjectPropertyListenerBlock = {
         [weak self] _, _ in
@@ -207,7 +207,7 @@ final class VoiceInputStateMonitor {
            !snapshot.inputDeviceNames.contains(Self.targetDeviceName)
         {
             print(
-                "\(logTag) ⚠️ \(host.shortTitle)正在录音，但实际输入不是 " +
+                "\(logTag) ⚠️ \(app.shortTitle)正在录音，但实际输入不是 " +
                 Self.targetDeviceName
             )
         }

@@ -1,38 +1,62 @@
 import Foundation
 
-/// The input method that owns the remote voice session.
-enum VoiceInputHost: String, CaseIterable, Identifiable, Codable {
-    case weType
+/// A selectable voice-input application. Only `isSupported` apps can be
+/// selected; the rest are placeholders for future providers.
+struct VoiceInputApp: Identifiable, Hashable {
+    let id: String
+    let title: String
+    let shortTitle: String
+    let bundleID: String
+    let logTag: String
+    let isSupported: Bool
+    let canObserveRecording: Bool
+    let requiresStartConfirmation: Bool
+    let requiresCloseConfirmation: Bool
+    let defaultPTTShortcut: TriggerShortcut
+    let defaultToggleShortcut: TriggerShortcut
+}
 
-    var id: String { rawValue }
+enum VoiceInputAppCatalog {
+    static let weType = VoiceInputApp(
+        id: "wetype",
+        title: L10n.text("微信输入法", "WeType"),
+        shortTitle: L10n.text("微信输入法", "WeType"),
+        bundleID: "com.tencent.inputmethod.wetype",
+        logTag: "WETYPE-STATE",
+        isSupported: true,
+        canObserveRecording: true,
+        requiresStartConfirmation: false,
+        requiresCloseConfirmation: false,
+        defaultPTTShortcut: .pttDefault,
+        defaultToggleShortcut: .toggleDefault
+    )
 
-    var title: String { L10n.text("微信输入法", "WeType") }
-    var shortTitle: String { L10n.text("微信输入法", "WeType") }
-    var bundleID: String { "com.tencent.inputmethod.wetype" }
-    var logTag: String { "WETYPE-STATE" }
+    /// A disabled menu row. It reserves the selector for future apps without
+    /// claiming support for a provider we have not verified.
+    static let more = VoiceInputApp(
+        id: "more",
+        title: L10n.text(
+            "更多语音输入软件（即将支持）",
+            "More voice input apps (coming soon)"
+        ),
+        shortTitle: L10n.text(
+            "更多语音输入软件",
+            "More voice input apps"
+        ),
+        bundleID: "",
+        logTag: "VOICE-APP",
+        isSupported: false,
+        canObserveRecording: false,
+        requiresStartConfirmation: true,
+        requiresCloseConfirmation: true,
+        defaultPTTShortcut: .pttDefault,
+        defaultToggleShortcut: .toggleDefault
+    )
 
-    /// WeType exposes its CoreAudio recording state. Its shortcut is still the
-    /// authoritative start/stop signal, but the state lets vRemoter open the
-    /// mix when WeType consumes the shortcut before the event tap sees it.
-    var canObserveRecording: Bool { true }
+    static let all: [VoiceInputApp] = [weType, more]
 
-    /// WeType's shortcut key itself is the confirmation; waiting one second
-    /// would trip its prewarm latency.
-    var requiresStartConfirmation: Bool { false }
-
-    /// WeType's push-to-talk ends on the synthetic key-up; close immediately
-    /// instead of waiting for the full CoreAudio close verification.
-    var requiresCloseConfirmation: Bool { false }
-
-    var gestureMode: VoiceGestureMode { .pushToTalk }
-
-    /// WeType stores its push-to-talk shortcut as right Option by default,
-    /// and its shortcut monitor distinguishes the physical side.
-    var defaultTrigger: InputTriggerKey { .optionRight }
-
-    /// Label used by the voice row on the key-mapping page.
-    var voiceActionTitle: String {
-        RemoteMappingTarget.weTypeVoice.title
+    static func app(id: String) -> VoiceInputApp {
+        all.first(where: { $0.id == id }) ?? weType
     }
 }
 

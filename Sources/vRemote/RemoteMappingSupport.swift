@@ -45,7 +45,7 @@ enum RemoteProfiles {
         .init(id: "0B", title: L10n.text("返回", "Back"), symbol: "chevron.backward", defaultTarget: .escape),
         .init(id: "0A", title: "Home", symbol: "house", defaultTarget: .showDesktop),
         .init(id: "0E", title: "YouTube", symbol: "play.rectangle", defaultTarget: .disabled),
-        .init(id: "voice", title: L10n.text("语音", "Voice"), symbol: "mic", defaultTarget: .weTypeVoice, voiceControlled: true),
+        .init(id: "voice", title: L10n.text("语音", "Voice"), symbol: "mic", defaultTarget: .voiceInput, voiceControlled: true),
         .init(id: "08", title: L10n.text("静音", "Mute"), symbol: "speaker.slash", defaultTarget: .mute),
         .init(id: "0F", title: "Netflix", symbol: "n.square", defaultTarget: .disabled),
         .init(id: "01", title: L10n.text("电源", "Power"), symbol: "power", defaultTarget: .disabled),
@@ -62,7 +62,7 @@ enum RemoteProfiles {
 
 enum RemoteMappingTarget: String, CaseIterable, Identifiable, Codable, Hashable {
     case disabled
-    case weTypeVoice
+    case voiceInput
     case arrowUp
     case arrowDown
     case arrowLeft
@@ -97,7 +97,7 @@ enum RemoteMappingTarget: String, CaseIterable, Identifiable, Codable, Hashable 
     var title: String {
         switch self {
         case .disabled: L10n.text("禁用", "Disabled")
-        case .weTypeVoice: L10n.text("微信输入法语音", "WeType Voice")
+        case .voiceInput: L10n.text("语音输入", "Voice Input")
         case .arrowUp: L10n.text("方向上", "Up Arrow")
         case .arrowDown: L10n.text("方向下", "Down Arrow")
         case .arrowLeft: L10n.text("方向左", "Left Arrow")
@@ -180,7 +180,7 @@ enum RemoteMappingTarget: String, CaseIterable, Identifiable, Codable, Hashable 
     }
 
     func post(isDown: Bool) {
-        guard self != .disabled, self != .weTypeVoice else { return }
+        guard self != .disabled, self != .voiceInput else { return }
         switch self {
         case .sleep:
             // 睡眠：无可靠组合键，走 System Events（首次触发 macOS TCC 授权）。
@@ -524,7 +524,7 @@ final class RemoteMappingStore: ObservableObject {
         for button: RemoteButtonDefinition,
         remote: SupportedRemoteID
     ) -> RemoteMappingTarget {
-        guard !button.voiceControlled else { return .weTypeVoice }
+        guard !button.voiceControlled else { return .voiceInput }
         guard button.remappable else { return .disabled }
         let key = prefix + remote.rawValue + "." + button.id
         guard let raw = defaults.string(forKey: key),

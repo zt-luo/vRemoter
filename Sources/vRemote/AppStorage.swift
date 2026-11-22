@@ -6,9 +6,8 @@ enum AppStorage {
     static let macInputEnabledKey = "macInputEnabled"
     static let remoteInputEnabledKey = "remoteInputEnabled"
     static let secondInputDeviceUIDKey = "secondInputDeviceUID"
-    static let weTypeTriggerModeKey = "weTypeTriggerMode"
-    static let weTypePTTTriggerKeyKey = "weTypePTTTriggerKey"
-    static let weTypeToggleTriggerKeyKey = "weTypeToggleTriggerKey"
+    static let voiceInputSelectedAppKey = "voiceInput.selectedApp"
+    static let voiceInputDetectedModeKey = "voiceInput.detectedMode"
 
     static let logsDirectory: URL = {
         FileManager.default.homeDirectoryForCurrentUser
@@ -36,9 +35,8 @@ enum AppStorage {
             recordingEnabledKey: false,
             macInputEnabledKey: true,
             remoteInputEnabledKey: true,
-            weTypeTriggerModeKey: VoiceGestureMode.pushToTalk.rawValue,
-            weTypePTTTriggerKeyKey: InputTriggerKey.optionRight.rawValue,
-            weTypeToggleTriggerKeyKey: InputTriggerKey.option.rawValue,
+            voiceInputSelectedAppKey: VoiceInputAppCatalog.weType.id,
+            voiceInputDetectedModeKey: "",
             secondInputDeviceUIDKey: "",
         ])
         ensureDirectory(logsDirectory)
@@ -68,51 +66,93 @@ enum AppStorage {
         set { UserDefaults.standard.set(newValue, forKey: remoteInputEnabledKey) }
     }
 
-    static var weTypeTriggerMode: VoiceGestureMode {
+    static var selectedVoiceInputAppID: String {
         get {
-            let raw = UserDefaults.standard.string(forKey: weTypeTriggerModeKey)
-            return VoiceGestureMode(rawValue: raw ?? "") ?? .pushToTalk
+            UserDefaults.standard.string(forKey: voiceInputSelectedAppKey)
+                ?? VoiceInputAppCatalog.weType.id
         }
         set {
-            UserDefaults.standard.set(newValue.rawValue, forKey: weTypeTriggerModeKey)
+            UserDefaults.standard.set(newValue, forKey: voiceInputSelectedAppKey)
         }
     }
 
-    static var weTypePTTTriggerKey: InputTriggerKey {
+    static var selectedVoiceInputApp: VoiceInputApp {
+        VoiceInputAppCatalog.app(id: selectedVoiceInputAppID)
+    }
+
+    static func shortcutKey(
+        appID: String,
+        mode: VoiceGestureMode
+    ) -> String {
+        "voiceInput.\(appID).\(mode.rawValue).shortcut"
+    }
+
+    static func shortcut(
+        for appID: String,
+        mode: VoiceGestureMode
+    ) -> TriggerShortcut {
+        let key = shortcutKey(appID: appID, mode: mode)
+        if let data = UserDefaults.standard.data(forKey: key),
+           let shortcut = try? JSONDecoder().decode(
+               TriggerShortcut.self,
+               from: data
+           ) {
+            return shortcut
+        }
+        // Migration from the single-modifier trigger settings.
+        let legacyKey = mode == .pushToTalk
+            ? "weTypePTTTriggerKey"
+            : "weTypeToggleTriggerKey"
+        if let raw = UserDefaults.standard.string(forKey: legacyKey),
+           let trigger = InputTriggerKey(rawValue: raw) {
+            return trigger.shortcut
+        }
+        if mode == .pushToTalk,
+           let raw = UserDefaults.standard.string(forKey: "inputTriggerKey"),
+           let trigger = InputTriggerKey(rawValue: raw) {
+            return trigger.shortcut
+        }
+        let app = VoiceInputAppCatalog.app(id: appID)
+        return mode == .pushToTalk
+            ? app.defaultPTTShortcut
+            : app.defaultToggleShortcut
+    }
+
+    static func setShortcut(
+        _ shortcut: TriggerShortcut,
+        for appID: String,
+        mode: VoiceGestureMode
+    ) {
+        guard let data = try? JSONEncoder().encode(shortcut) else { return }
+        UserDefaults.standard.set(
+            data,
+            forKey: shortcutKey(appID: appID, mode: mode)
+        )
+    }
+
+    static var pttShortcut: TriggerShortcut {
+        shortcut(for: selectedVoiceInputAppID, mode: .pushToTalk)
+    }
+
+    static var toggleShortcut: TriggerShortcut {
+        shortcut(for: selectedVoiceInputAppID, mode: .toggle)
+    }
+
+    static var detectedTriggerMode: VoiceGestureMode? {
         get {
-            let raw = UserDefaults.standard.string(forKey: weTypePTTTriggerKeyKey)
-            return InputTriggerKey(rawValue: raw ?? "") ?? .optionRight
+            let key = voiceInputDetectedModeKey + "." + selectedVoiceInputAppID
+            guard let raw = UserDefaults.standard.string(forKey: key) else {
+                return nil
+            }
+            return VoiceGestureMode(rawValue: raw)
         }
         set {
-            UserDefaults.standard.set(newValue.rawValue, forKey: weTypePTTTriggerKeyKey)
-        }
-    }
-
-    static var weTypeToggleTriggerKey: InputTriggerKey {
-        get {
-            let raw = UserDefaults.standard.string(forKey: weTypeToggleTriggerKeyKey)
-            return InputTriggerKey(rawValue: raw ?? "") ?? .option
-        }
-        set {
-            UserDefaults.standard.set(newValue.rawValue, forKey: weTypeToggleTriggerKeyKey)
-        }
-    }
-
-    static var activeTriggerKey: InputTriggerKey {
-        triggerKey(for: weTypeTriggerMode)
-    }
-
-    static func triggerKey(for mode: VoiceGestureMode) -> InputTriggerKey {
-        switch mode {
-        case .pushToTalk: weTypePTTTriggerKey
-        case .toggle: weTypeToggleTriggerKey
-        }
-    }
-
-    static func setTriggerKey(_ key: InputTriggerKey, for mode: VoiceGestureMode) {
-        switch mode {
-        case .pushToTalk: weTypePTTTriggerKey = key
-        case .toggle: weTypeToggleTriggerKey = key
+            let key = voiceInputDetectedModeKey + "." + selectedVoiceInputAppID
+            if let newValue {
+                UserDefaults.standard.set(newValue.rawValue, forKey: key)
+            } else {
+                UserDefaults.standard.removeObject(forKey: key)
+            }
         }
     }
 

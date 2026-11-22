@@ -65,15 +65,15 @@ final class VoiceSessionCoordinator {
 
     private let voiceState: any VoiceInputStateProviding
     private let setRemoteRouteActive: (Bool, Bool) -> Void
-    private let triggerTap: (InputTriggerKey) -> Void
-    private let triggerDown: (InputTriggerKey) -> Void
-    private let triggerUp: (InputTriggerKey) -> Void
+    private let triggerTap: (TriggerShortcut) -> Void
+    private let triggerDown: (TriggerShortcut) -> Void
+    private let triggerUp: (TriggerShortcut) -> Void
     private let now: () -> Date
 
-    /// WeType owns this session and is driven by the remote / keyboard gesture.
-    var voiceHost: VoiceInputHost = .weType
-    /// How the input method's shortcut is synthesized. WeType currently uses
-    /// push-to-talk; the toggle path remains available for tap-to-continue.
+    /// The selected voice-input app. Only supported apps reach the session.
+    var voiceApp: VoiceInputApp = VoiceInputAppCatalog.weType
+    /// The mode used for the current/last gesture. It is detected from the
+    /// app's behavior or set by the physical keyboard shortcut.
     var triggerMode: VoiceGestureMode = .pushToTalk
 
     private var phase: Phase = .closed
@@ -86,13 +86,14 @@ final class VoiceSessionCoordinator {
     private var physicalVoiceGestures = [VoiceRemoteID: PhysicalVoiceGesture]()
     private var syntheticTriggerIsDown = false
     private var syntheticToggleIsOpen = false
-    private var sessionTriggerKey: InputTriggerKey = AppStorage.activeTriggerKey
+    private var sessionTriggerShortcut: TriggerShortcut = AppStorage.pttShortcut
     private var sessionTriggerMode: VoiceGestureMode = .pushToTalk
     private var continuousRemoteSession = false
     private var continuousRecoveryAttempted = false
     private var continuousStopInProgress = false
     private var suppressedRemoteButtons = Set<String>()
     private var continuousIdleWorkItem: DispatchWorkItem?
+    private var triggerModeProbeWorkItem: DispatchWorkItem?
 
     private var routeCloseWorkItem: DispatchWorkItem?
     private var startVerificationWorkItem: DispatchWorkItem?
@@ -114,9 +115,9 @@ final class VoiceSessionCoordinator {
         setRemoteRouteActive: @escaping (Bool, Bool) -> Void = {
             AudioPipe.shared.setRemoteActive($0, captureSecondInput: $1)
         },
-        triggerTap: @escaping (InputTriggerKey) -> Void = { Key.triggerTap($0) },
-        triggerDown: @escaping (InputTriggerKey) -> Void = { Key.triggerDown($0) },
-        triggerUp: @escaping (InputTriggerKey) -> Void = { Key.triggerUp($0) },
+        triggerTap: @escaping (TriggerShortcut) -> Void = { Key.triggerTap($0) },
+        triggerDown: @escaping (TriggerShortcut) -> Void = { Key.triggerDown($0) },
+        triggerUp: @escaping (TriggerShortcut) -> Void = { Key.triggerUp($0) },
         now: @escaping () -> Date = Date.init
     ) {
         self.voiceState = voiceState
@@ -175,7 +176,7 @@ final class VoiceSessionCoordinator {
 
         if supportsPhysicalHoldGesture, reason == 0x03 {
             let recognitionWasOpen = phase == .open
-                || (voiceHost.canObserveRecording && snapshot.isRecording)
+                || (voiceApp.canObserveRecording && snapshot.isRecording)
             if physicalVoiceGestures[remote] == nil {
                 physicalVoiceGestures[remote] = PhysicalVoiceGesture(
                     beganAt: now(),
@@ -351,8 +352,8 @@ final class VoiceSessionCoordinator {
         // proven physical-tap path above performs an immediate recovery.
         if phase == .open || phase == .opening {
             publish(L10n.text(
-                "\(voiceHost.shortTitle)仍开启 · 遥控器音频已停止",
-                "\(voiceHost.shortTitle) still open · remote audio stopped"
+                "\(voiceApp.shortTitle)仍开启 · 遥控器音频已停止",
+                "\(voiceApp.shortTitle) still open · remote audio stopped"
             ))
         } else if streamingRemotes.isEmpty {
             scheduleRouteClose(after: 0.08)
@@ -420,15 +421,20 @@ final class VoiceSessionCoordinator {
 
     /// Called before the real physical trigger reaches WeType. It updates the
     /// remote transport only; it never synthesizes a second keyboard event.
-    func triggerDownObserved(isSynthetic: Bool) {
+    func triggerDownObserved(
+        mode: VoiceGestureMode? = nil,
+        isSynthetic: Bool
+    ) {
         guard !isSynthetic else { return }
+        let mode = mode ?? triggerMode
+        triggerMode = mode
         let snapshot = voiceState.snapshotNow()
         let shouldOpen: Bool
         switch phase {
         case .closed:
             // WeType always reports an active input stream, so its snapshot
             // cannot tell us whether the host is already recording.
-            shouldOpen = voiceHost.canObserveRecording
+            shouldOpen = voiceApp.canObserveRecording
                 ? !snapshot.isRecording
                 : true
         case .closing:
@@ -463,8 +469,12 @@ final class VoiceSessionCoordinator {
         }
     }
 
-    func triggerUpObserved(isSynthetic: Bool) {
+    func triggerUpObserved(
+        mode: VoiceGestureMode? = nil,
+        isSynthetic: Bool
+    ) {
         guard !isSynthetic else { return }
+        triggerMode = mode ?? triggerMode
         print(
             "[TRIGGER] UP source=keyboard phase=\(phase.rawValue) " +
             "owner=\(owner.rawValue)"
@@ -475,7 +485,7 @@ final class VoiceSessionCoordinator {
             reconcileSoon(after: 0.15)
             return
         }
-        if voiceHost == .weType {
+        if voiceApp.id == VoiceInputAppCatalog.weType.id {
             // The physical key-up already reached WeType. If its recording
             // state is already idle, close now; otherwise let the snapshot
             // callback close when WeType stops.
@@ -530,6 +540,9 @@ final class VoiceSessionCoordinator {
                 startVerificationWorkItem?.cancel()
                 startVerificationWorkItem = nil
                 phase = .open
+                if owner == .remote {
+                    AppStorage.detectedTriggerMode = sessionTriggerMode
+                }
                 activateRemoteRoute()
                 if let remote = sessionRemote,
                    !streamingRemotes.contains(remote),
@@ -547,6 +560,9 @@ final class VoiceSessionCoordinator {
                 ))
 
             case .open:
+                if owner == .remote {
+                    AppStorage.detectedTriggerMode = sessionTriggerMode
+                }
                 activateRemoteRoute()
                 publish(recordingStatus(
                     snapshot.deviceSummary,
@@ -571,7 +587,7 @@ final class VoiceSessionCoordinator {
                 // The opening verification owns this transient idle window.
                 break
             case .open, .closing:
-                if voiceHost == .weType,
+                if voiceApp.id == VoiceInputAppCatalog.weType.id,
                    syntheticTriggerIsDown,
                    phase == .open {
                     // WeType can briefly report idle while capture warms up.
@@ -581,24 +597,24 @@ final class VoiceSessionCoordinator {
                     }
                     return
                 }
-                finalizeClosed(reason: "\(voiceHost.shortTitle) inactive")
+                finalizeClosed(reason: "\(voiceApp.shortTitle) inactive")
             case .closed:
                 if routeActive || !streamingRemotes.isEmpty {
                     closeRouteAndTransports()
                 }
             }
             publish(L10n.text(
-                "\(voiceHost.shortTitle)已就绪",
-                "\(voiceHost.shortTitle) ready"
+                "\(voiceApp.shortTitle)已就绪",
+                "\(voiceApp.shortTitle) ready"
             ))
 
         case .unavailable:
             if phase != .opening {
-                finalizeClosed(reason: "\(voiceHost.shortTitle) unavailable")
+                finalizeClosed(reason: "\(voiceApp.shortTitle) unavailable")
             }
             publish(L10n.text(
-                "等待\(voiceHost.shortTitle)",
-                "Waiting for \(voiceHost.shortTitle)"
+                "等待\(voiceApp.shortTitle)",
+                "Waiting for \(voiceApp.shortTitle)"
             ))
         }
     }
@@ -613,7 +629,7 @@ final class VoiceSessionCoordinator {
         sessionRemote = preferredRemoteProvider?()
         activateRemoteRoute()
         print(
-            "[VOICE-SESSION] \(voiceHost.shortTitle) external activation " +
+            "[VOICE-SESSION] \(voiceApp.shortTitle) external activation " +
             "adopted device=\(snapshot.deviceSummary)"
         )
         publish(recordingStatus(
@@ -632,8 +648,8 @@ final class VoiceSessionCoordinator {
         sessionRemote = nil
         activateRemoteRoute()
         publish(L10n.text(
-            "\(voiceHost.shortTitle)正在启动 · 等待遥控器",
-            "\(voiceHost.shortTitle) starting · waiting for remote"
+            "\(voiceApp.shortTitle)正在启动 · 等待遥控器",
+            "\(voiceApp.shortTitle) starting · waiting for remote"
         ))
         scheduleStartVerification(for: generation)
     }
@@ -649,20 +665,31 @@ final class VoiceSessionCoordinator {
         phase = .opening
         self.owner = owner
         sessionRemote = remote
-        sessionTriggerKey = AppStorage.activeTriggerKey
-        sessionTriggerMode = triggerMode
+        if owner == .remote, sendTrigger {
+            sessionTriggerMode = triggerMode
+        } else {
+            sessionTriggerMode = triggerMode
+        }
+        triggerMode = sessionTriggerMode
+        sessionTriggerShortcut = AppStorage.shortcut(
+            for: voiceApp.id,
+            mode: sessionTriggerMode
+        )
         activateRemoteRoute()
         if sendTrigger {
             switch sessionTriggerMode {
             case .pushToTalk:
                 if !syntheticTriggerIsDown {
                     syntheticTriggerIsDown = true
-                    triggerDown(sessionTriggerKey)
+                    triggerDown(sessionTriggerShortcut)
                 }
             case .toggle:
-                triggerTap(sessionTriggerKey)
+                triggerTap(sessionTriggerShortcut)
                 syntheticToggleIsOpen = true
             }
+        }
+        if owner == .remote, sendTrigger {
+            scheduleTriggerModeProbe()
         }
         if requestTransportImmediately {
             requestRemoteTransportOpen(
@@ -674,12 +701,12 @@ final class VoiceSessionCoordinator {
         publish(
             owner == .keyboard
                 ? L10n.text(
-                    "\(voiceHost.shortTitle)正在启动 · 遥控器已预热",
-                    "\(voiceHost.shortTitle) starting · remote ready"
+                    "\(voiceApp.shortTitle)正在启动 · 遥控器已预热",
+                    "\(voiceApp.shortTitle) starting · remote ready"
                 )
                 : L10n.text(
-                    "遥控器已启动 · 正在打开\(voiceHost.shortTitle)",
-                    "Remote started · opening \(voiceHost.shortTitle)"
+                    "遥控器已启动 · 正在打开\(voiceApp.shortTitle)",
+                    "Remote started · opening \(voiceApp.shortTitle)"
                 )
         )
         scheduleStartVerification(for: generation)
@@ -717,7 +744,7 @@ final class VoiceSessionCoordinator {
             case .pushToTalk:
                 releaseSyntheticTrigger()
             case .toggle:
-                triggerTap(sessionTriggerKey)
+                triggerTap(sessionTriggerShortcut)
                 syntheticToggleIsOpen = false
             }
         } else {
@@ -728,8 +755,8 @@ final class VoiceSessionCoordinator {
         scheduleRouteClose(after: 0.10)
         scheduleCloseVerification(for: generation)
         publish(L10n.text(
-            "遥控器已结束 · 正在关闭\(voiceHost.shortTitle)",
-            "Remote ended · closing \(voiceHost.shortTitle)"
+            "遥控器已结束 · 正在关闭\(voiceApp.shortTitle)",
+            "Remote ended · closing \(voiceApp.shortTitle)"
         ))
         print(
             "[VOICE-SESSION] begin closing reason=\(reason) " +
@@ -755,13 +782,13 @@ final class VoiceSessionCoordinator {
     private func stopSyntheticToggleIfNeeded() {
         guard syntheticToggleIsOpen else { return }
         syntheticToggleIsOpen = false
-        triggerTap(sessionTriggerKey)
+        triggerTap(sessionTriggerShortcut)
     }
 
     private func releaseSyntheticTrigger() {
         guard syntheticTriggerIsDown else { return }
         syntheticTriggerIsDown = false
-        triggerUp(sessionTriggerKey)
+        triggerUp(sessionTriggerShortcut)
     }
 
     // MARK: - Remote transport requests
@@ -902,7 +929,7 @@ final class VoiceSessionCoordinator {
     private func scheduleStartVerification(for expectedGeneration: UInt64) {
         startVerificationWorkItem?.cancel()
         startVerificationWorkItem = nil
-        guard voiceHost.requiresStartConfirmation else {
+        guard voiceApp.requiresStartConfirmation else {
             // WeType's shortcut key is the confirmation. Do not run the
             // one-second CoreAudio timeout while its capture prewarms.
             guard generation == expectedGeneration, phase == .opening else {
@@ -910,8 +937,8 @@ final class VoiceSessionCoordinator {
             }
             phase = .open
             publish(L10n.text(
-                "\(voiceHost.shortTitle)录音中 · 遥控器已接入",
-                "\(voiceHost.shortTitle) recording · remote connected"
+                "\(voiceApp.shortTitle)录音中 · 遥控器已接入",
+                "\(voiceApp.shortTitle) recording · remote connected"
             ))
             return
         }
@@ -928,8 +955,8 @@ final class VoiceSessionCoordinator {
             }
             self.finalizeClosed(reason: "opening timeout")
             self.publish(L10n.text(
-                "\(self.voiceHost.shortTitle)未启动 · 遥控器自动关闭",
-                "\(self.voiceHost.shortTitle) did not start · remote closed"
+                "\(self.voiceApp.shortTitle)未启动 · 遥控器自动关闭",
+                "\(self.voiceApp.shortTitle) did not start · remote closed"
             ))
         }
         startVerificationWorkItem = work
@@ -939,7 +966,7 @@ final class VoiceSessionCoordinator {
     private func scheduleCloseVerification(for expectedGeneration: UInt64) {
         closeVerificationWorkItem?.cancel()
         closeVerificationWorkItem = nil
-        guard voiceHost.requiresCloseConfirmation else {
+        guard voiceApp.requiresCloseConfirmation else {
             // The synthetic key-up has been posted; close now instead of
             // waiting for the host's CoreAudio state to settle.
             guard generation == expectedGeneration, phase == .closing else {
@@ -971,8 +998,8 @@ final class VoiceSessionCoordinator {
                     )
                 }
                 self.publish(L10n.text(
-                    "\(self.voiceHost.shortTitle)仍在录音 · 请再次关闭",
-                    "\(self.voiceHost.shortTitle) still recording · close again"
+                    "\(self.voiceApp.shortTitle)仍在录音 · 请再次关闭",
+                    "\(self.voiceApp.shortTitle) still recording · close again"
                 ))
                 print(
                     "[VOICE-SESSION] close not observed; restored open state"
@@ -1038,6 +1065,8 @@ final class VoiceSessionCoordinator {
         openConfirmationWorkItem = nil
         continuousIdleWorkItem?.cancel()
         continuousIdleWorkItem = nil
+        triggerModeProbeWorkItem?.cancel()
+        triggerModeProbeWorkItem = nil
     }
 
     private func closeRouteAndTransports() {
@@ -1064,6 +1093,8 @@ final class VoiceSessionCoordinator {
         openConfirmationWorkItem = nil
         continuousIdleWorkItem?.cancel()
         continuousIdleWorkItem = nil
+        triggerModeProbeWorkItem?.cancel()
+        triggerModeProbeWorkItem = nil
     }
 
     /// A short press of any remote button ends a continuous session. The key
@@ -1100,6 +1131,69 @@ final class VoiceSessionCoordinator {
         return true
     }
 
+    /// The remote has one physical voice key, but WeType exposes separate
+    /// push-to-talk and toggle shortcuts. Start with the cached mode (or PTT)
+    /// and switch once if WeType does not start recording. The detected mode
+    /// is cached per app; changing WeType's own mode is corrected on the next
+    /// session.
+    /// Test hook: the self-test harness keeps the async probe disabled so
+    /// deterministic session assertions are not raced by real timers.
+    var isTriggerModeProbeEnabled = true
+
+    private func scheduleTriggerModeProbe(attempt: Int = 0) {
+        guard isTriggerModeProbeEnabled else { return }
+        triggerModeProbeWorkItem?.cancel()
+        let expectedGeneration = generation
+        let delay: TimeInterval = sessionTriggerMode == .toggle ? 0.30 : 0.18
+        let work = DispatchWorkItem { [weak self] in
+            guard let self,
+                  self.generation == expectedGeneration,
+                  self.phase == .opening || self.phase == .open,
+                  self.owner == .remote,
+                  self.voiceApp.id == VoiceInputAppCatalog.weType.id
+            else { return }
+            if self.voiceState.snapshotNow().isRecording {
+                AppStorage.detectedTriggerMode = self.sessionTriggerMode
+                self.triggerMode = self.sessionTriggerMode
+                return
+            }
+            guard attempt < 2 else {
+                self.beginClosing(
+                    sendTrigger: true,
+                    reason: "voice app did not start"
+                )
+                return
+            }
+            if self.sessionTriggerMode == .pushToTalk {
+                print("[VOICE-SESSION] trigger probe: PTT did not start, try toggle")
+                self.releaseSyntheticTrigger()
+                self.sessionTriggerMode = .toggle
+                self.triggerMode = .toggle
+                self.sessionTriggerShortcut = AppStorage.shortcut(
+                    for: self.voiceApp.id,
+                    mode: .toggle
+                )
+                self.triggerTap(self.sessionTriggerShortcut)
+                self.syntheticToggleIsOpen = true
+            } else {
+                print("[VOICE-SESSION] trigger probe: toggle did not start, try PTT")
+                self.stopSyntheticToggleIfNeeded()
+                self.sessionTriggerMode = .pushToTalk
+                self.triggerMode = .pushToTalk
+                self.sessionTriggerShortcut = AppStorage.shortcut(
+                    for: self.voiceApp.id,
+                    mode: .pushToTalk
+                )
+                guard !self.syntheticTriggerIsDown else { return }
+                self.syntheticTriggerIsDown = true
+                self.triggerDown(self.sessionTriggerShortcut)
+            }
+            self.scheduleTriggerModeProbe(attempt: attempt + 1)
+        }
+        triggerModeProbeWorkItem = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: work)
+    }
+
     private func scheduleContinuousIdleCheck() {
         continuousIdleWorkItem?.cancel()
         let expectedGeneration = generation
@@ -1123,8 +1217,8 @@ final class VoiceSessionCoordinator {
 
     private func recordingStatus(_ suffixZH: String, _ suffixEN: String) -> String {
         L10n.text(
-            "\(voiceHost.shortTitle)录音中 · \(suffixZH)",
-            "\(voiceHost.shortTitle) recording · \(suffixEN)"
+            "\(voiceApp.shortTitle)录音中 · \(suffixZH)",
+            "\(voiceApp.shortTitle) recording · \(suffixEN)"
         )
     }
 

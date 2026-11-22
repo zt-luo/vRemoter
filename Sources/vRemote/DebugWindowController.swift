@@ -210,7 +210,11 @@ private final class ConsoleViewModel: ObservableObject {
     @Published var secondInputDeviceUID = ""
     @Published var secondInputDeviceName = ""
     @Published var secondInputCapturing = false
-    @Published var voiceHost = VoiceInputHost.weType
+    @Published var voiceApps = VoiceInputAppCatalog.all
+    @Published var selectedVoiceAppID = AppStorage.selectedVoiceInputAppID
+    @Published var pttShortcut = AppStorage.pttShortcut
+    @Published var toggleShortcut = AppStorage.toggleShortcut
+    @Published var shortcutError: String?
     @Published var voiceIsRecording = false
     @Published var voiceInput = "--"
     @Published var voiceInputWarning: String?
@@ -222,34 +226,67 @@ private final class ConsoleViewModel: ObservableObject {
     @Published var inputMonitoringGranted = false
     @Published var bluetoothGranted = false
     @Published var chromecastConnected = false
-    @Published var triggerMode = AppStorage.weTypeTriggerMode
-    @Published var activeTriggerKey = AppStorage.activeTriggerKey
     @Published var activeModal: ConsoleModal?
     var onStopMicrophone: (() -> Void)?
     var onRestartApp: (() -> Void)?
     var onMacInputEnabledChanged: ((Bool) -> Void)?
     var onRemoteInputEnabledChanged: ((Bool) -> Void)?
     var onSecondInputDeviceChanged: ((String) -> Void)?
-    var onInputTriggerChanged: (() -> Void)?
-    var onWeTypeTriggerModeChanged: ((VoiceGestureMode) -> Void)?
+    var onShortcutsChanged: (() -> Void)?
+    var onVoiceInputAppChanged: ((VoiceInputApp) -> Void)?
     var onRemoteMappingEnabledChanged: ((SupportedRemoteID, Bool) -> Void)?
 
+    var voiceApp: VoiceInputApp {
+        VoiceInputAppCatalog.app(id: selectedVoiceAppID)
+    }
     var voiceUsesVRemote: Bool { voiceInput.contains("vRemoteDr 2ch") }
 
-    func setInputTrigger(_ trigger: InputTriggerKey) {
-        guard activeTriggerKey != trigger else { return }
-        activeTriggerKey = trigger
-        AppStorage.setTriggerKey(trigger, for: triggerMode)
-        onInputTriggerChanged?()
+    func setVoiceInputApp(_ id: String) {
+        let app = VoiceInputAppCatalog.app(id: id)
+        guard app.isSupported, app.id != selectedVoiceAppID else { return }
+        selectedVoiceAppID = app.id
+        AppStorage.selectedVoiceInputAppID = app.id
+        pttShortcut = AppStorage.shortcut(for: app.id, mode: .pushToTalk)
+        toggleShortcut = AppStorage.shortcut(for: app.id, mode: .toggle)
+        shortcutError = nil
+        onVoiceInputAppChanged?(app)
+        onShortcutsChanged?()
     }
 
-    func setWeTypeTriggerMode(_ mode: VoiceGestureMode) {
-        guard triggerMode != mode else { return }
-        triggerMode = mode
-        AppStorage.weTypeTriggerMode = mode
-        activeTriggerKey = AppStorage.triggerKey(for: mode)
-        onWeTypeTriggerModeChanged?(mode)
-        onInputTriggerChanged?()
+    func setPTTShortcut(_ shortcut: TriggerShortcut) {
+        guard shortcut != toggleShortcut else {
+            shortcutError = L10n.text(
+                "按住说话和点按切换不能使用同一个快捷键。",
+                "Push-to-talk and toggle cannot use the same shortcut."
+            )
+            return
+        }
+        pttShortcut = shortcut
+        shortcutError = nil
+        AppStorage.setShortcut(
+            shortcut,
+            for: selectedVoiceAppID,
+            mode: .pushToTalk
+        )
+        onShortcutsChanged?()
+    }
+
+    func setToggleShortcut(_ shortcut: TriggerShortcut) {
+        guard shortcut != pttShortcut else {
+            shortcutError = L10n.text(
+                "按住说话和点按切换不能使用同一个快捷键。",
+                "Push-to-talk and toggle cannot use the same shortcut."
+            )
+            return
+        }
+        toggleShortcut = shortcut
+        shortcutError = nil
+        AppStorage.setShortcut(
+            shortcut,
+            for: selectedVoiceAppID,
+            mode: .toggle
+        )
+        onShortcutsChanged?()
     }
 
     func setRemoteMappingEnabled(_ enabled: Bool, remote: SupportedRemoteID) {
@@ -323,8 +360,8 @@ final class DebugWindowController: NSWindowController, NSWindowDelegate {
     var onMacInputEnabledChanged: ((Bool) -> Void)?
     var onRemoteInputEnabledChanged: ((Bool) -> Void)?
     var onSecondInputDeviceChanged: ((String) -> Void)?
-    var onInputTriggerChanged: (() -> Void)?
-    var onWeTypeTriggerModeChanged: ((VoiceGestureMode) -> Void)?
+    var onShortcutsChanged: (() -> Void)?
+    var onVoiceInputAppChanged: ((VoiceInputApp) -> Void)?
     var onRemoteMappingEnabledChanged: ((SupportedRemoteID, Bool) -> Void)?
 
     private let model = ConsoleViewModel()
@@ -367,11 +404,11 @@ final class DebugWindowController: NSWindowController, NSWindowDelegate {
         model.onSecondInputDeviceChanged = { [weak self] uid in
             self?.onSecondInputDeviceChanged?(uid)
         }
-        model.onInputTriggerChanged = { [weak self] in
-            self?.onInputTriggerChanged?()
+        model.onShortcutsChanged = { [weak self] in
+            self?.onShortcutsChanged?()
         }
-        model.onWeTypeTriggerModeChanged = { [weak self] mode in
-            self?.onWeTypeTriggerModeChanged?(mode)
+        model.onVoiceInputAppChanged = { [weak self] app in
+            self?.onVoiceInputAppChanged?(app)
         }
         model.onRemoteMappingEnabledChanged = { [weak self] remote, enabled in
             self?.onRemoteMappingEnabledChanged?(remote, enabled)
@@ -409,7 +446,6 @@ final class DebugWindowController: NSWindowController, NSWindowDelegate {
         secondInputDeviceUID: String,
         secondInputDeviceName: String,
         secondInputCapturing: Bool,
-        voiceHost: VoiceInputHost,
         voiceIsRecording: Bool,
         voiceInput: String,
         voiceInputWarning: String?,
@@ -430,7 +466,6 @@ final class DebugWindowController: NSWindowController, NSWindowDelegate {
             self.model.secondInputDeviceUID = secondInputDeviceUID
             self.model.secondInputDeviceName = secondInputDeviceName
             self.model.secondInputCapturing = secondInputCapturing
-            self.model.voiceHost = voiceHost
             self.model.voiceIsRecording = voiceIsRecording
             self.model.voiceInput = voiceInput
             self.model.voiceInputWarning = voiceInputWarning
@@ -581,7 +616,7 @@ private struct StudioMixerView: View {
                 db: model.macLevelDB,
                 enabled: model.macInputEnabled,
                 capturing: model.secondInputCapturing,
-                participationNote: model.voiceHost == .weType
+                participationNote: model.voiceApp.id == VoiceInputAppCatalog.weType.id
                     ? L10n.text(
                         "键盘触发时参与混合",
                         "In mix on keyboard trigger"
@@ -613,7 +648,7 @@ private struct StudioMixerView: View {
     private var statusPanel: some View {
         VStack(spacing: 0) {
             StatusRow(
-                title: model.voiceHost.title,
+                title: model.voiceApp.title,
                 value: voiceStatusValue,
                 tone: voiceStatusTone,
                 action: nil,
@@ -685,7 +720,7 @@ private struct StudioMixerView: View {
         if let warning = model.voiceInputWarning {
             return warning
         }
-        if model.voiceHost.canObserveRecording {
+        if model.voiceApp.canObserveRecording {
             if model.voiceIsRecording {
                 return model.voiceUsesVRemote
                     ? L10n.text(
@@ -712,7 +747,7 @@ private struct StudioMixerView: View {
 
     private var voiceStatusTone: StatusTone {
         if model.voiceInputWarning != nil { return .warning }
-        if model.voiceHost.canObserveRecording,
+        if model.voiceApp.canObserveRecording,
            model.voiceIsRecording,
            !model.voiceUsesVRemote {
             return .error
@@ -763,11 +798,12 @@ private struct KeyMappingView: View {
     @ObservedObject var model: ConsoleViewModel
     @ObservedObject private var mappings = RemoteMappingStore.shared
     @State private var selectedDevice: SupportedRemoteID = .chromecast
+    @State private var recordingShortcut: VoiceGestureMode?
 
     var body: some View {
         VStack(spacing: 14) {
             triggerPanel
-                .frame(height: 138)
+                .frame(height: 178)
             HStack(spacing: 14) {
                 devicePanel
                     .frame(width: 238)
@@ -777,94 +813,162 @@ private struct KeyMappingView: View {
     }
 
     private var triggerPanel: some View {
-        HStack(spacing: 18) {
-            VStack(alignment: .leading, spacing: 7) {
-                HStack(spacing: 7) {
-                    Image(systemName: "waveform.badge.mic")
-                        .foregroundStyle(ConsoleTheme.green)
-                    Text(L10n.text("语音输入与触发键", "Voice input & trigger"))
-                        .font(.system(size: 17, weight: .semibold))
-                        .foregroundStyle(ConsoleTheme.text)
-                }
-                HStack(spacing: 8) {
-                    Text(L10n.text("触发方式", "Trigger mode"))
-                        .font(.system(size: 11, weight: .medium))
-                        .foregroundStyle(ConsoleTheme.secondary)
-                    Picker(
-                        L10n.text("触发方式", "Trigger mode"),
-                        selection: Binding(
-                            get: { model.triggerMode },
-                            set: model.setWeTypeTriggerMode
-                        )
-                    ) {
-                        ForEach(VoiceGestureMode.allCases) { mode in
-                            Text(mode.title).tag(mode)
-                        }
-                    }
-                    .labelsHidden()
-                    .frame(width: 132)
-                    .disabled(model.remoteStreaming)
-                }
-                Text(voiceTriggerDescription)
-                    .font(.system(size: 12))
-                    .foregroundStyle(ConsoleTheme.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-                if model.voiceHost == .weType,
-                   let warning = model.voiceInputWarning {
-                    Label(warning, systemImage: "exclamationmark.triangle.fill")
-                        .font(.system(size: 10.5, weight: .medium))
-                        .foregroundStyle(ConsoleTheme.amber)
-                }
-            }
-            Spacer(minLength: 10)
-            VStack(alignment: .trailing, spacing: 7) {
-                Picker(
-                    model.triggerMode == .pushToTalk
-                        ? L10n.text("按住说话键", "Push-to-talk key")
-                        : L10n.text("点按切换键", "Toggle key"),
-                    selection: Binding(
-                        get: { model.activeTriggerKey },
-                        set: model.setInputTrigger
-                    )
-                ) {
-                    ForEach(InputTriggerKey.allCases) { trigger in
-                        Text(trigger.title).tag(trigger)
-                    }
-                }
-                .labelsHidden()
-                .frame(width: 180)
-                .disabled(model.remoteStreaming)
-                if model.activeTriggerKey == .function {
-                    Label(
-                        L10n.text("Fn 需在本机测试", "Test Fn on this Mac"),
-                        systemImage: "exclamationmark.triangle.fill"
-                    )
-                    .font(.system(size: 10.5, weight: .medium))
-                    .foregroundStyle(ConsoleTheme.amber)
-                } else if model.remoteStreaming {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 8) {
+                Image(systemName: "waveform.badge.mic")
+                    .foregroundStyle(ConsoleTheme.green)
+                Text(L10n.text("语音输入与触发键", "Voice input & trigger"))
+                    .font(.system(size: 17, weight: .semibold))
+                    .foregroundStyle(ConsoleTheme.text)
+                Spacer(minLength: 8)
+                if model.remoteStreaming {
                     Text(L10n.text("录音结束后可修改", "Stop recording to change"))
                         .font(.system(size: 10.5))
                         .foregroundStyle(ConsoleTheme.tertiary)
                 }
+                Menu {
+                    ForEach(model.voiceApps) { app in
+                        Button {
+                            model.setVoiceInputApp(app.id)
+                        } label: {
+                            if app.id == model.selectedVoiceAppID {
+                                Label(app.title, systemImage: "checkmark")
+                            } else {
+                                Text(app.title)
+                            }
+                        }
+                        .disabled(!app.isSupported)
+                    }
+                } label: {
+                    HStack(spacing: 4) {
+                        Text(model.voiceApp.title)
+                            .font(.system(size: 11.5, weight: .medium))
+                        Image(systemName: "chevron.up.chevron.down")
+                            .font(.system(size: 8, weight: .semibold))
+                    }
+                    .foregroundStyle(ConsoleTheme.text)
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 5)
+                    .background(ConsoleTheme.surface2)
+                    .clipShape(RoundedRectangle(cornerRadius: 7))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 7)
+                            .stroke(ConsoleTheme.line, lineWidth: 1)
+                    )
+                }
+                .menuStyle(.borderlessButton)
+                .fixedSize()
+                .disabled(model.remoteStreaming)
+            }
+            HStack(spacing: 12) {
+                shortcutCard(for: .pushToTalk)
+                shortcutCard(for: .toggle)
+            }
+            if let error = model.shortcutError {
+                Label(error, systemImage: "exclamationmark.triangle.fill")
+                    .font(.system(size: 10.5, weight: .medium))
+                    .foregroundStyle(ConsoleTheme.amber)
+            } else {
+                Text(L10n.text(
+                    "两个键必须不同；支持修饰键、单键和组合键。当前模式由微信输入法自动识别。",
+                    "The two shortcuts must differ. Modifiers, single keys and combinations are supported. The active mode is detected from WeType."
+                ))
+                    .font(.system(size: 10.5))
+                    .foregroundStyle(ConsoleTheme.secondary)
+            }
+            if let warning = model.voiceInputWarning {
+                Label(warning, systemImage: "exclamationmark.triangle.fill")
+                    .font(.system(size: 10.5, weight: .medium))
+                    .foregroundStyle(ConsoleTheme.amber)
             }
         }
-        .padding(.horizontal, 19)
+        .padding(.horizontal, 16)
+        .padding(.vertical, 12)
         .background(panelBackground(ConsoleTheme.surface, radius: 17))
-    }
-
-    private var voiceTriggerDescription: String {
-        switch model.triggerMode {
-        case .pushToTalk:
-            L10n.text(
-                "遥控器按住说话、松手结束。微信输入法「按住说话」默认是右 Option，请与这里保持一致；麦克风请在微信输入法 → 语音输入 → 麦克风里选择 vRemoteDr 2ch。键盘只识别所选侧，遥控器按所选侧合成。",
-                "Hold the remote to talk and release to stop. WeType's push-to-talk shortcut defaults to right Option; keep this trigger in sync. Choose vRemoteDr 2ch in WeType → Voice Input → Microphone. The keyboard listens to the selected side only; the remote synthesizes that side."
-            )
-        case .toggle:
-            L10n.text(
-                "遥控器按下开始、再按停止。微信输入法「点按切换」默认是左 Option，请与这里保持一致；麦克风请在微信输入法 → 语音输入 → 麦克风里选择 vRemoteDr 2ch。键盘只识别所选侧，遥控器按所选侧合成。",
-                "Press the remote to start and again to stop. WeType's tap-to-toggle shortcut defaults to left Option; keep this trigger in sync. Choose vRemoteDr 2ch in WeType → Voice Input → Microphone. The keyboard listens to the selected side only; the remote synthesizes that side."
+        .sheet(item: $recordingShortcut) { mode in
+            TriggerShortcutRecorderView(
+                title: mode.title,
+                current: shortcut(for: mode),
+                onCancel: { recordingShortcut = nil },
+                onSave: { shortcut in
+                    switch mode {
+                    case .pushToTalk: model.setPTTShortcut(shortcut)
+                    case .toggle: model.setToggleShortcut(shortcut)
+                    }
+                    recordingShortcut = nil
+                }
             )
         }
+    }
+
+    private func shortcut(for mode: VoiceGestureMode) -> TriggerShortcut {
+        switch mode {
+        case .pushToTalk: model.pttShortcut
+        case .toggle: model.toggleShortcut
+        }
+    }
+
+    private func shortcutCard(for mode: VoiceGestureMode) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 7) {
+                Circle()
+                    .fill(ConsoleTheme.green)
+                    .frame(width: 6, height: 6)
+                Text(mode.title)
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(ConsoleTheme.text)
+                Spacer()
+                Text(L10n.text("已配置", "Configured"))
+                    .font(.system(size: 9.5, weight: .medium))
+                    .foregroundStyle(ConsoleTheme.green)
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 2)
+                    .background(ConsoleTheme.green.opacity(0.12))
+                    .clipShape(Capsule())
+            }
+            Text(mode == .pushToTalk
+                ? L10n.text("长按遥控器语音键", "Hold the remote voice key")
+                : L10n.text("短按遥控器语音键", "Tap the remote voice key"))
+                .font(.system(size: 10.5))
+                .foregroundStyle(ConsoleTheme.secondary)
+            HStack(spacing: 8) {
+                Text(L10n.text("触发键", "Shortcut"))
+                    .font(.system(size: 10.5))
+                    .foregroundStyle(ConsoleTheme.tertiary)
+                Spacer(minLength: 6)
+                Button {
+                    recordingShortcut = mode
+                } label: {
+                    HStack(spacing: 6) {
+                        Text(shortcut(for: mode).label)
+                            .font(.system(size: 11.5, weight: .medium))
+                            .lineLimit(1)
+                        Image(systemName: "record.circle")
+                            .font(.system(size: 11))
+                            .foregroundStyle(ConsoleTheme.green)
+                    }
+                    .foregroundStyle(ConsoleTheme.text)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 5)
+                    .background(ConsoleTheme.surface2)
+                    .clipShape(RoundedRectangle(cornerRadius: 7))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 7)
+                            .stroke(ConsoleTheme.line, lineWidth: 1)
+                    )
+                }
+                .buttonStyle(.plain)
+                .disabled(model.remoteStreaming)
+            }
+        }
+        .padding(11)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(ConsoleTheme.surface)
+        .clipShape(RoundedRectangle(cornerRadius: 11))
+        .overlay(
+            RoundedRectangle(cornerRadius: 11)
+                .stroke(ConsoleTheme.line, lineWidth: 1)
+        )
     }
 
     private var devicePanel: some View {
@@ -1034,7 +1138,7 @@ private struct MappingRow: View {
                     .font(.system(size: 11))
                     .foregroundStyle(ConsoleTheme.tertiary)
             } else if button.voiceControlled {
-                Text(VoiceInputHost.weType.voiceActionTitle)
+                Text(RemoteMappingTarget.voiceInput.title)
                     .font(.system(size: 11))
                     .foregroundStyle(ConsoleTheme.green)
             } else {
@@ -1052,7 +1156,7 @@ private struct MappingRow: View {
                             }
                         )
                     ) {
-                        ForEach(RemoteMappingTarget.allCases.filter { $0 != .weTypeVoice }) { target in
+                        ForEach(RemoteMappingTarget.allCases.filter { $0 != .voiceInput }) { target in
                             Text(target == .custom
                                 ? customMenuTitle
                                 : target.title
@@ -1104,6 +1208,151 @@ private struct MappingRow: View {
             )
         }
         return L10n.text("自定义…", "Custom…")
+    }
+}
+
+private struct TriggerShortcutRecorderView: View {
+    let title: String
+    let current: TriggerShortcut
+    let onCancel: () -> Void
+    let onSave: (TriggerShortcut) -> Void
+    @State private var captured: TriggerShortcut?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            VStack(alignment: .leading, spacing: 5) {
+                Text(L10n.text(
+                    "录制\(title)快捷键",
+                    "Record \(title) shortcut"
+                ))
+                    .font(.system(size: 20, weight: .semibold))
+                Text(L10n.text(
+                    "按下一个修饰键、单键或组合键。",
+                    "Press a modifier, a single key, or a combination."
+                ))
+                    .font(.system(size: 13))
+                    .foregroundStyle(ConsoleTheme.secondary)
+            }
+
+            TriggerShortcutCaptureView { shortcut in
+                captured = shortcut
+            }
+            .frame(height: 82)
+            .overlay(
+                RoundedRectangle(cornerRadius: 13)
+                    .stroke(
+                        captured == nil ? ConsoleTheme.line : ConsoleTheme.green,
+                        lineWidth: 1.5
+                    )
+            )
+            .overlay {
+                VStack(spacing: 5) {
+                    Text(captured?.label ?? current.label)
+                        .font(.system(size: 18, weight: .semibold, design: .rounded))
+                        .foregroundStyle(captured == nil ? ConsoleTheme.secondary : ConsoleTheme.text)
+                    Text(L10n.text(
+                        "支持左右修饰键、单键和组合键",
+                        "Left/right modifiers, single keys and combinations"
+                    ))
+                        .font(.system(size: 10.5))
+                        .foregroundStyle(ConsoleTheme.tertiary)
+                }
+                .allowsHitTesting(false)
+            }
+
+            HStack {
+                Button(L10n.text("取消", "Cancel"), action: onCancel)
+                Spacer()
+                Button(L10n.text("保存快捷键", "Save Shortcut")) {
+                    if let captured { onSave(captured) }
+                }
+                .keyboardShortcut(.defaultAction)
+                .disabled(captured == nil)
+            }
+        }
+        .padding(24)
+        .frame(width: 430, height: 245)
+        .background(ConsoleTheme.panel)
+        .foregroundStyle(ConsoleTheme.text)
+    }
+}
+
+private struct TriggerShortcutCaptureView: NSViewRepresentable {
+    let onCapture: (TriggerShortcut) -> Void
+
+    func makeNSView(context: Context) -> TriggerShortcutCaptureNSView {
+        let view = TriggerShortcutCaptureNSView()
+        view.onCapture = onCapture
+        DispatchQueue.main.async {
+            view.window?.makeFirstResponder(view)
+        }
+        return view
+    }
+
+    func updateNSView(
+        _ nsView: TriggerShortcutCaptureNSView,
+        context: Context
+    ) {
+        nsView.onCapture = onCapture
+        DispatchQueue.main.async {
+            nsView.window?.makeFirstResponder(nsView)
+        }
+    }
+}
+
+private final class TriggerShortcutCaptureNSView: NSView {
+    var onCapture: ((TriggerShortcut) -> Void)?
+    private var activeModifiers: [CGKeyCode: TriggerModifier] = [:]
+    private var sawNonModifierKey = false
+    private var captured = false
+
+    override var acceptsFirstResponder: Bool { true }
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            self.window?.makeFirstResponder(self)
+        }
+    }
+
+    override func keyDown(with event: NSEvent) {
+        guard !event.isARepeat, !captured else { return }
+        let keyCode = CGKeyCode(event.keyCode)
+        if TriggerShortcut.modifier(for: keyCode) != nil {
+            return
+        }
+        sawNonModifierKey = true
+        captured = true
+        let shortcut = TriggerShortcut(
+            keyCode: keyCode,
+            modifiers: Array(activeModifiers.values)
+        )
+        onCapture?(shortcut)
+    }
+
+    override func keyUp(with event: NSEvent) {
+        // A key release is irrelevant once keyDown captured the shortcut.
+    }
+
+    override func flagsChanged(with event: NSEvent) {
+        guard !captured else { return }
+        let keyCode = CGKeyCode(event.keyCode)
+        guard let modifier = TriggerShortcut.modifier(for: keyCode) else {
+            return
+        }
+        let cgFlags = CGEventFlags(rawValue: UInt64(event.modifierFlags.rawValue))
+        let isDown = cgFlags.contains(modifier.flag)
+        if isDown {
+            activeModifiers[keyCode] = modifier
+            return
+        }
+        let wasActive = activeModifiers.removeValue(forKey: keyCode) != nil
+        guard wasActive, !sawNonModifierKey, activeModifiers.isEmpty else {
+            return
+        }
+        captured = true
+        onCapture?(TriggerShortcut(keyCode: nil, modifiers: [modifier]))
     }
 }
 
@@ -1504,7 +1753,7 @@ private struct OutputChannelView: View {
 
     private var outputError: Bool {
         !model.driverAvailable
-            || (model.voiceHost.canObserveRecording
+            || (model.voiceApp.canObserveRecording
                 && model.voiceIsRecording
                 && !model.voiceUsesVRemote)
     }

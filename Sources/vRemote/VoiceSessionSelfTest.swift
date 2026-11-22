@@ -53,9 +53,9 @@ enum VoiceSessionSelfTest {
         init(initialState: VoiceInputStateMonitor.State = .inactive) {
             voiceState = FakeVoiceInputState(state: initialState)
             var routeSink: ((Bool, Bool) -> Void)?
-            var triggerSink: ((InputTriggerKey) -> Void)?
-            var triggerDownSink: ((InputTriggerKey) -> Void)?
-            var triggerUpSink: ((InputTriggerKey) -> Void)?
+            var triggerSink: ((TriggerShortcut) -> Void)?
+            var triggerDownSink: ((TriggerShortcut) -> Void)?
+            var triggerUpSink: ((TriggerShortcut) -> Void)?
             var nowSink: (() -> Date)?
             coordinator = VoiceSessionCoordinator(
                 voiceState: voiceState,
@@ -66,6 +66,7 @@ enum VoiceSessionSelfTest {
                 now: { nowSink?() ?? Date(timeIntervalSince1970: 0) }
             )
             coordinator.triggerMode = .toggle
+            coordinator.isTriggerModeProbeEnabled = false
             routeSink = { [weak self] active, captureSecond in
                 self?.routeChanges.append(active)
                 self?.routeCaptureFlags.append(captureSecond)
@@ -160,6 +161,8 @@ enum VoiceSessionSelfTest {
         testTriggerSideMatching(checks)
         testToggleForceCloseStops(checks)
         testToggleKeyboardKeyUpKeepsSession(checks)
+        testTriggerShortcutMatching(checks)
+        testTriggerShortcutCoding(checks)
         emit("[SELF-TEST] completed failures=\(checks.failures)")
         return checks.failures == 0
     }
@@ -275,7 +278,7 @@ enum VoiceSessionSelfTest {
         _ c: CheckContext
     ) {
         let h = Harness()
-        h.coordinator.voiceHost = .weType
+        h.coordinator.voiceApp = VoiceInputAppCatalog.weType
         h.coordinator.triggerMode = .pushToTalk
         h.beginChromecastPress()
         c.expect(h.triggerDownCount == 1, "weType press sends one keyDown")
@@ -305,7 +308,7 @@ enum VoiceSessionSelfTest {
 
     private static func testWeTypeKeyboardHoldCloses(_ c: CheckContext) {
         let h = Harness()
-        h.coordinator.voiceHost = .weType
+        h.coordinator.voiceApp = VoiceInputAppCatalog.weType
         h.coordinator.triggerMode = .pushToTalk
         h.coordinator.triggerDownObserved(isSynthetic: false)
         c.expect(h.triggerDownCount == 0, "keyboard PTT is not replayed")
@@ -329,7 +332,7 @@ enum VoiceSessionSelfTest {
         _ c: CheckContext
     ) {
         let h = Harness()
-        h.coordinator.voiceHost = .weType
+        h.coordinator.voiceApp = VoiceInputAppCatalog.weType
         h.coordinator.triggerMode = .pushToTalk
         h.voiceState.emit(.active)
         c.expect(
@@ -359,7 +362,7 @@ enum VoiceSessionSelfTest {
         _ c: CheckContext
     ) {
         let h = Harness()
-        h.coordinator.voiceHost = .weType
+        h.coordinator.voiceApp = VoiceInputAppCatalog.weType
         h.coordinator.triggerMode = .pushToTalk
         h.beginChromecastPress()
         c.expect(
@@ -373,7 +376,7 @@ enum VoiceSessionSelfTest {
         _ c: CheckContext
     ) {
         let h = Harness()
-        h.coordinator.voiceHost = .weType
+        h.coordinator.voiceApp = VoiceInputAppCatalog.weType
         h.coordinator.triggerMode = .pushToTalk
         h.coordinator.triggerDownObserved(isSynthetic: false)
         c.expect(
@@ -389,7 +392,7 @@ enum VoiceSessionSelfTest {
 
     private static func testWeTypeShortTapKeepsStreaming(_ c: CheckContext) {
         let h = Harness()
-        h.coordinator.voiceHost = .weType
+        h.coordinator.voiceApp = VoiceInputAppCatalog.weType
         h.coordinator.triggerMode = .pushToTalk
         h.beginChromecastPress()
         h.advance(0.12)
@@ -410,7 +413,7 @@ enum VoiceSessionSelfTest {
         _ c: CheckContext
     ) {
         let h = Harness()
-        h.coordinator.voiceHost = .weType
+        h.coordinator.voiceApp = VoiceInputAppCatalog.weType
         h.coordinator.triggerMode = .pushToTalk
         h.beginChromecastPress()
         h.advance(0.12)
@@ -475,7 +478,7 @@ enum VoiceSessionSelfTest {
         _ c: CheckContext
     ) {
         let h = Harness()
-        h.coordinator.voiceHost = .weType
+        h.coordinator.voiceApp = VoiceInputAppCatalog.weType
         h.coordinator.triggerMode = .pushToTalk
         h.beginChromecastPress()
                 h.coordinator.forceClose()
@@ -616,6 +619,72 @@ enum VoiceSessionSelfTest {
         c.expect(
             h.triggerTapCount == 0,
             "physical toggle key never synthesizes a tap"
+        )
+    }
+
+    private static func testTriggerShortcutMatching(_ c: CheckContext) {
+        let combo = TriggerShortcut(
+            keyCode: 0x31,
+            modifiers: [.controlLeft, .optionLeft]
+        )
+        c.expect(
+            combo.matchesKeyEvent(
+                keyCode: 0x31,
+                flags: [.maskControl, .maskAlternate]
+            ),
+            "a control-option-space combo matches"
+        )
+        c.expect(
+            !combo.matchesKeyEvent(
+                keyCode: 0x31,
+                flags: [.maskControl, .maskAlternate, .maskShift]
+            ),
+            "extra modifiers do not match"
+        )
+        c.expect(
+            !combo.matchesKeyEvent(
+                keyCode: 0x24,
+                flags: [.maskControl, .maskAlternate]
+            ),
+            "a different main key does not match"
+        )
+        let modifierOnly = TriggerShortcut(.optionRight)
+        c.expect(
+            modifierOnly.matchesModifierKeyCode(0x3D),
+            "right Option matches its own key code"
+        )
+        c.expect(
+            !modifierOnly.matchesModifierKeyCode(0x3A),
+            "right Option ignores the left key code"
+        )
+        c.expect(
+            TriggerShortcut(.optionRight) == TriggerShortcut(.optionRight),
+            "equal shortcuts compare equal"
+        )
+        c.expect(
+            TriggerShortcut(.optionRight) != TriggerShortcut(.option),
+            "left and right Option differ"
+        )
+    }
+
+    private static func testTriggerShortcutCoding(_ c: CheckContext) {
+        let original = TriggerShortcut(
+            keyCode: 0x31,
+            modifiers: [.controlLeft, .optionLeft]
+        )
+        guard let data = try? JSONEncoder().encode(original),
+              let decoded = try? JSONDecoder().decode(
+                  TriggerShortcut.self,
+                  from: data
+              )
+        else {
+            c.expect(false, "trigger shortcut round-trips through JSON")
+            return
+        }
+        c.expect(decoded == original, "trigger shortcut round-trips through JSON")
+        c.expect(
+            decoded.label == original.label,
+            "trigger shortcut label survives encoding"
         )
     }
 
