@@ -870,8 +870,8 @@ private struct KeyMappingView: View {
                     .foregroundStyle(ConsoleTheme.amber)
             } else {
                 Text(L10n.text(
-                    "两个键必须不同；支持修饰键、单键和组合键。当前模式由微信输入法自动识别。",
-                    "The two shortcuts must differ. Modifiers, single keys and combinations are supported. The active mode is detected from WeType."
+                    "两个键必须不同；支持修饰键、单键和组合键。短按优先用点按切换，长按优先用按住说话，输入法未响应时自动回退。",
+                    "The two shortcuts must differ. Modifiers, single keys and combinations are supported. A tap prefers toggle; a hold prefers push-to-talk; the app falls back if the input method ignores the shortcut."
                 ))
                     .font(.system(size: 10.5))
                     .foregroundStyle(ConsoleTheme.secondary)

@@ -59,6 +59,8 @@ final class VoiceSessionCoordinator {
     }
 
     private static let remoteHoldThreshold: TimeInterval = 0.55
+    private static let remoteGestureDecisionDelay: TimeInterval = 0.20
+    private static let remoteGestureVerifyDelay: TimeInterval = 0.20
     private static let openConfirmationTimeout: TimeInterval = 1.0
     private static let closeVerificationTimeout: TimeInterval = 1.2
     private static let maximumOpenAttempts = 3
@@ -75,6 +77,9 @@ final class VoiceSessionCoordinator {
     /// The mode used for the current/last gesture. It is detected from the
     /// app's behavior or set by the physical keyboard shortcut.
     var triggerMode: VoiceGestureMode = .pushToTalk
+    /// Production splits a remote press into tap=toggle and hold=PTT.
+    /// Tests disable the split to exercise the synthesizer synchronously.
+    var isRemoteGestureSplitEnabled = true
 
     private var phase: Phase = .closed
     private var owner: Owner = .none
@@ -93,7 +98,9 @@ final class VoiceSessionCoordinator {
     private var continuousStopInProgress = false
     private var suppressedRemoteButtons = Set<String>()
     private var continuousIdleWorkItem: DispatchWorkItem?
-    private var triggerModeProbeWorkItem: DispatchWorkItem?
+    private var remoteGestureStartWorkItem: DispatchWorkItem?
+    private var remoteGestureVerifyWorkItem: DispatchWorkItem?
+    private var remoteGestureStarted = false
 
     private var routeCloseWorkItem: DispatchWorkItem?
     private var startVerificationWorkItem: DispatchWorkItem?
@@ -269,6 +276,7 @@ final class VoiceSessionCoordinator {
         {
             let duration = now().timeIntervalSince(gesture.beganAt)
             let wasHold = duration >= Self.remoteHoldThreshold
+                || remoteGestureStarted
             print(
                 String(
                     format:
@@ -307,6 +315,19 @@ final class VoiceSessionCoordinator {
             // synthetic key held; a toggle host already got its start tap on
             // press.
             guard phase == .opening || phase == .open else { return }
+            remoteGestureStartWorkItem?.cancel()
+            remoteGestureStartWorkItem = nil
+            if isRemoteGestureSplitEnabled, !remoteGestureStarted {
+                sessionTriggerMode = .toggle
+                triggerMode = .toggle
+                sessionTriggerShortcut = AppStorage.shortcut(
+                    for: voiceApp.id,
+                    mode: .toggle
+                )
+                triggerTap(sessionTriggerShortcut)
+                syntheticToggleIsOpen = true
+                scheduleRemoteGestureVerify(attempt: 0)
+            }
             sessionRemote = remote
             continuousRemoteSession = true
             continuousRecoveryAttempted = false
@@ -364,6 +385,11 @@ final class VoiceSessionCoordinator {
         streamingRemotes.remove(remote)
         physicalVoiceGestures.removeValue(forKey: remote)
         continuousRemoteSession = false
+        remoteGestureStartWorkItem?.cancel()
+        remoteGestureStartWorkItem = nil
+        remoteGestureVerifyWorkItem?.cancel()
+        remoteGestureVerifyWorkItem = nil
+        remoteGestureStarted = false
         if openRequestedRemote == remote {
             openRequestedRemote = nil
             openRetryWorkItem?.cancel()
@@ -519,6 +545,7 @@ final class VoiceSessionCoordinator {
         physicalVoiceGestures.removeAll()
         continuousRemoteSession = false
         continuousStopInProgress = false
+        remoteGestureStarted = false
         closeRouteAndTransports()
         publish("已手动关闭")
     }
@@ -540,9 +567,6 @@ final class VoiceSessionCoordinator {
                 startVerificationWorkItem?.cancel()
                 startVerificationWorkItem = nil
                 phase = .open
-                if owner == .remote {
-                    AppStorage.detectedTriggerMode = sessionTriggerMode
-                }
                 activateRemoteRoute()
                 if let remote = sessionRemote,
                    !streamingRemotes.contains(remote),
@@ -560,9 +584,6 @@ final class VoiceSessionCoordinator {
                 ))
 
             case .open:
-                if owner == .remote {
-                    AppStorage.detectedTriggerMode = sessionTriggerMode
-                }
                 activateRemoteRoute()
                 publish(recordingStatus(
                     snapshot.deviceSummary,
@@ -665,31 +686,37 @@ final class VoiceSessionCoordinator {
         phase = .opening
         self.owner = owner
         sessionRemote = remote
-        if owner == .remote, sendTrigger {
-            sessionTriggerMode = triggerMode
+        if owner == .remote, sendTrigger, isRemoteGestureSplitEnabled {
+            // The remote has one key. Wait briefly to distinguish a short tap
+            // (toggle) from a hold (push-to-talk). The selected shortcut is
+            // sent after the decision, or on release for a short tap.
+            sessionTriggerMode = .toggle
+            triggerMode = .toggle
+            remoteGestureStarted = false
         } else {
             sessionTriggerMode = triggerMode
+            triggerMode = sessionTriggerMode
         }
-        triggerMode = sessionTriggerMode
         sessionTriggerShortcut = AppStorage.shortcut(
             for: voiceApp.id,
             mode: sessionTriggerMode
         )
         activateRemoteRoute()
         if sendTrigger {
-            switch sessionTriggerMode {
-            case .pushToTalk:
-                if !syntheticTriggerIsDown {
-                    syntheticTriggerIsDown = true
-                    triggerDown(sessionTriggerShortcut)
+            if owner == .remote, isRemoteGestureSplitEnabled {
+                scheduleRemoteGestureStart()
+            } else {
+                switch sessionTriggerMode {
+                case .pushToTalk:
+                    if !syntheticTriggerIsDown {
+                        syntheticTriggerIsDown = true
+                        triggerDown(sessionTriggerShortcut)
+                    }
+                case .toggle:
+                    triggerTap(sessionTriggerShortcut)
+                    syntheticToggleIsOpen = true
                 }
-            case .toggle:
-                triggerTap(sessionTriggerShortcut)
-                syntheticToggleIsOpen = true
             }
-        }
-        if owner == .remote, sendTrigger {
-            scheduleTriggerModeProbe()
         }
         if requestTransportImmediately {
             requestRemoteTransportOpen(
@@ -739,6 +766,11 @@ final class VoiceSessionCoordinator {
         continuousRemoteSession = false
         continuousIdleWorkItem?.cancel()
         continuousIdleWorkItem = nil
+        remoteGestureStartWorkItem?.cancel()
+        remoteGestureStartWorkItem = nil
+        remoteGestureVerifyWorkItem?.cancel()
+        remoteGestureVerifyWorkItem = nil
+        remoteGestureStarted = false
         if sendTrigger {
             switch sessionTriggerMode {
             case .pushToTalk:
@@ -775,6 +807,7 @@ final class VoiceSessionCoordinator {
         physicalVoiceGestures.removeAll()
         continuousRemoteSession = false
         continuousStopInProgress = false
+        remoteGestureStarted = false
         closeRouteAndTransports()
         print("[VOICE-SESSION] closed reason=\(reason)")
     }
@@ -1065,8 +1098,11 @@ final class VoiceSessionCoordinator {
         openConfirmationWorkItem = nil
         continuousIdleWorkItem?.cancel()
         continuousIdleWorkItem = nil
-        triggerModeProbeWorkItem?.cancel()
-        triggerModeProbeWorkItem = nil
+        remoteGestureStartWorkItem?.cancel()
+        remoteGestureStartWorkItem = nil
+        remoteGestureVerifyWorkItem?.cancel()
+        remoteGestureVerifyWorkItem = nil
+        remoteGestureStarted = false
     }
 
     private func closeRouteAndTransports() {
@@ -1093,8 +1129,11 @@ final class VoiceSessionCoordinator {
         openConfirmationWorkItem = nil
         continuousIdleWorkItem?.cancel()
         continuousIdleWorkItem = nil
-        triggerModeProbeWorkItem?.cancel()
-        triggerModeProbeWorkItem = nil
+        remoteGestureStartWorkItem?.cancel()
+        remoteGestureStartWorkItem = nil
+        remoteGestureVerifyWorkItem?.cancel()
+        remoteGestureVerifyWorkItem = nil
+        remoteGestureStarted = false
     }
 
     /// A short press of any remote button ends a continuous session. The key
@@ -1131,33 +1170,52 @@ final class VoiceSessionCoordinator {
         return true
     }
 
-    /// The remote has one physical voice key, but WeType exposes separate
-    /// push-to-talk and toggle shortcuts. Start with the cached mode (or PTT)
-    /// and switch once if WeType does not start recording. The detected mode
-    /// is cached per app; changing WeType's own mode is corrected on the next
-    /// session.
-    /// Test hook: the self-test harness keeps the async probe disabled so
-    /// deterministic session assertions are not raced by real timers.
-    var isTriggerModeProbeEnabled = true
-
-    private func scheduleTriggerModeProbe(attempt: Int = 0) {
-        guard isTriggerModeProbeEnabled else { return }
-        triggerModeProbeWorkItem?.cancel()
+    private func scheduleRemoteGestureStart() {
+        remoteGestureStartWorkItem?.cancel()
         let expectedGeneration = generation
-        let delay: TimeInterval = sessionTriggerMode == .toggle ? 0.30 : 0.18
         let work = DispatchWorkItem { [weak self] in
             guard let self,
                   self.generation == expectedGeneration,
                   self.phase == .opening || self.phase == .open,
                   self.owner == .remote,
-                  self.voiceApp.id == VoiceInputAppCatalog.weType.id
+                  !self.remoteGestureStarted
             else { return }
-            if self.voiceState.snapshotNow().isRecording {
-                AppStorage.detectedTriggerMode = self.sessionTriggerMode
-                self.triggerMode = self.sessionTriggerMode
-                return
-            }
-            guard attempt < 2 else {
+            self.remoteGestureStartWorkItem = nil
+            self.remoteGestureStarted = true
+            self.sessionTriggerMode = .pushToTalk
+            self.triggerMode = .pushToTalk
+            self.sessionTriggerShortcut = AppStorage.shortcut(
+                for: self.voiceApp.id,
+                mode: .pushToTalk
+            )
+            guard !self.syntheticTriggerIsDown else { return }
+            self.syntheticTriggerIsDown = true
+            self.triggerDown(self.sessionTriggerShortcut)
+            print("[VOICE-SESSION] remote gesture HOLD -> PTT")
+            self.scheduleRemoteGestureVerify(attempt: 0)
+        }
+        remoteGestureStartWorkItem = work
+        DispatchQueue.main.asyncAfter(
+            deadline: .now() + Self.remoteGestureDecisionDelay,
+            execute: work
+        )
+    }
+
+    /// If the gesture's preferred shortcut is not active in the input method,
+    /// try the other shortcut once. This keeps both gestures usable even when
+    /// WeType only has one of the two shortcuts configured.
+    private func scheduleRemoteGestureVerify(attempt: Int) {
+        remoteGestureVerifyWorkItem?.cancel()
+        let expectedGeneration = generation
+        let work = DispatchWorkItem { [weak self] in
+            guard let self,
+                  self.generation == expectedGeneration,
+                  self.phase == .opening || self.phase == .open,
+                  self.owner == .remote,
+                  !self.voiceState.snapshotNow().isRecording
+            else { return }
+            self.remoteGestureVerifyWorkItem = nil
+            guard attempt < 1 else {
                 self.beginClosing(
                     sendTrigger: true,
                     reason: "voice app did not start"
@@ -1165,7 +1223,7 @@ final class VoiceSessionCoordinator {
                 return
             }
             if self.sessionTriggerMode == .pushToTalk {
-                print("[VOICE-SESSION] trigger probe: PTT did not start, try toggle")
+                print("[VOICE-SESSION] gesture verify: PTT did not start, try toggle")
                 self.releaseSyntheticTrigger()
                 self.sessionTriggerMode = .toggle
                 self.triggerMode = .toggle
@@ -1176,7 +1234,7 @@ final class VoiceSessionCoordinator {
                 self.triggerTap(self.sessionTriggerShortcut)
                 self.syntheticToggleIsOpen = true
             } else {
-                print("[VOICE-SESSION] trigger probe: toggle did not start, try PTT")
+                print("[VOICE-SESSION] gesture verify: toggle did not start, try PTT")
                 self.stopSyntheticToggleIfNeeded()
                 self.sessionTriggerMode = .pushToTalk
                 self.triggerMode = .pushToTalk
@@ -1188,10 +1246,13 @@ final class VoiceSessionCoordinator {
                 self.syntheticTriggerIsDown = true
                 self.triggerDown(self.sessionTriggerShortcut)
             }
-            self.scheduleTriggerModeProbe(attempt: attempt + 1)
+            self.scheduleRemoteGestureVerify(attempt: attempt + 1)
         }
-        triggerModeProbeWorkItem = work
-        DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: work)
+        remoteGestureVerifyWorkItem = work
+        DispatchQueue.main.asyncAfter(
+            deadline: .now() + Self.remoteGestureVerifyDelay,
+            execute: work
+        )
     }
 
     private func scheduleContinuousIdleCheck() {

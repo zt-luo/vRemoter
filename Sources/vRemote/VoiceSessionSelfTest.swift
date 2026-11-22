@@ -66,7 +66,7 @@ enum VoiceSessionSelfTest {
                 now: { nowSink?() ?? Date(timeIntervalSince1970: 0) }
             )
             coordinator.triggerMode = .toggle
-            coordinator.isTriggerModeProbeEnabled = false
+            coordinator.isRemoteGestureSplitEnabled = false
             routeSink = { [weak self] active, captureSecond in
                 self?.routeChanges.append(active)
                 self?.routeCaptureFlags.append(captureSecond)
@@ -163,6 +163,8 @@ enum VoiceSessionSelfTest {
         testToggleKeyboardKeyUpKeepsSession(checks)
         testTriggerShortcutMatching(checks)
         testTriggerShortcutCoding(checks)
+        testRemoteSplitShortTapUsesToggle(checks)
+        testRemoteSplitLongHoldUsesPTT(checks)
         emit("[SELF-TEST] completed failures=\(checks.failures)")
         return checks.failures == 0
     }
@@ -685,6 +687,42 @@ enum VoiceSessionSelfTest {
         c.expect(
             decoded.label == original.label,
             "trigger shortcut label survives encoding"
+        )
+    }
+
+    private static func testRemoteSplitShortTapUsesToggle(
+        _ c: CheckContext
+    ) {
+        let h = Harness()
+        h.coordinator.triggerMode = .pushToTalk
+        h.coordinator.isRemoteGestureSplitEnabled = true
+        h.beginChromecastPress()
+        h.endChromecastPress()
+        c.expect(h.triggerTapCount == 1, "short tap uses the toggle shortcut")
+        c.expect(h.triggerDownCount == 0, "short tap never presses PTT")
+        c.expect(
+            h.openRequests.count == 1,
+            "short tap requests a persistent stream"
+        )
+        h.coordinator.forceClose()
+    }
+
+    private static func testRemoteSplitLongHoldUsesPTT(
+        _ c: CheckContext
+    ) {
+        let h = Harness()
+        h.coordinator.triggerMode = .pushToTalk
+        h.coordinator.isRemoteGestureSplitEnabled = true
+        h.beginChromecastPress()
+        h.voiceState.emit(.active)
+        RunLoop.current.run(until: Date().addingTimeInterval(0.25))
+        c.expect(h.triggerDownCount == 1, "long hold sends the PTT shortcut")
+        h.advance(0.70)
+        h.endChromecastPress()
+        c.expect(h.triggerUpCount == 1, "long release releases the PTT shortcut")
+        c.expect(
+            h.coordinator.debugSnapshot.phase == "closed",
+            "long release closes the session"
         )
     }
 
